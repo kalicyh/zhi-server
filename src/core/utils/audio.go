@@ -5,10 +5,91 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/hajimehoshi/go-mp3"
 	opus "github.com/qrtc/opus-go"
 )
+
+// OpusDecoder 封装opus解码器
+type OpusDecoder struct {
+	decoder *opus.OpusDecoder
+	mu      sync.Mutex
+	config  *OpusDecoderConfig
+	outBuffer []byte
+}
+
+// OpusDecoderConfig 解码器配置
+type OpusDecoderConfig struct {
+	SampleRate  int
+	MaxChannels int
+}
+
+// NewOpusDecoder 创建新的opus解码器
+func NewOpusDecoder(config *OpusDecoderConfig) (*OpusDecoder, error) {
+	if config == nil {
+		config = &OpusDecoderConfig{
+			SampleRate:  24000, // 默认使用24kHz采样率
+			MaxChannels: 1,     // 默认单通道
+		}
+	}
+
+	libConfig := &opus.OpusDecoderConfig{
+		SampleRate:  config.SampleRate,
+		MaxChannels: config.MaxChannels,
+	}
+
+	decoder, err := opus.CreateOpusDecoder(libConfig)
+	if err != nil {
+		return nil, fmt.Errorf("创建Opus解码器失败: %v", err)
+	}
+
+	bufSize := config.SampleRate * 2 * config.MaxChannels * 120 / 1000
+	if bufSize < 8192 {
+		bufSize = 8192 // 至少8KB的缓冲区
+	}
+
+	return &OpusDecoder{
+		decoder:   decoder,
+		config:    config,
+		outBuffer: make([]byte, bufSize),
+	}, nil
+}
+
+// Decode 解码opus数据为PCM
+func (d *OpusDecoder) Decode(opusData []byte) ([]byte, error) {
+	if len(opusData) == 0 {
+		return nil, nil
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// 使用预分配的缓冲区
+	n, err := d.decoder.Decode(opusData, d.outBuffer)
+	if err != nil {
+		return nil, fmt.Errorf("Opus解码失败: %v", err)
+	}
+
+	// 返回解码后的PCM数据的副本
+	result := make([]byte, n)
+	copy(result, d.outBuffer[:n])
+	return result, nil
+}
+
+// Close 关闭解码器
+func (d *OpusDecoder) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.decoder != nil {
+		if err := d.decoder.Close(); err != nil {
+			return fmt.Errorf("关闭Opus解码器失败: %v", err)
+		}
+		d.decoder = nil
+	}
+	return nil
+}
 
 func MP3ToPCMData(audioFile string) ([][]byte, error) {
 	file, err := os.Open(audioFile)

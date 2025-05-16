@@ -45,8 +45,9 @@ type ConnectionHandler struct {
 		haveVoiceLast time.Time
 		noVoiceLast   time.Time
 	}
-	asrTicker          *time.Ticker // 用于定时检查ASR结果
-	asr_server_receive bool         // 是否接收ASR结果
+	asrTicker          *time.Ticker       // 用于定时检查ASR结果
+	asr_server_receive bool               // 是否接收ASR结果
+	opusDecoder        *utils.OpusDecoder // Opus解码器
 
 	// 对话相关
 	dialogueManager      *chat.DialogueManager
@@ -110,6 +111,18 @@ func NewConnectionHandler(
 	// 初始化对话管理器
 	handler.dialogueManager = chat.NewDialogueManager(handler.logger, nil)
 
+	// 初始化opus解码器
+	opusDecoder, err := utils.NewOpusDecoder(&utils.OpusDecoderConfig{
+		SampleRate:  24000, // 客户端使用24kHz采样率
+		MaxChannels: 1,     // 单声道音频
+	})
+	if err != nil {
+		logger.Error(fmt.Sprintf("初始化Opus解码器失败: %v", err))
+	} else {
+		handler.opusDecoder = opusDecoder
+		logger.Info("Opus解码器初始化成功")
+	}
+
 	return handler
 }
 
@@ -161,7 +174,25 @@ func (h *ConnectionHandler) handleMessage(messageType int, message []byte) error
 		h.clientTextQueue <- string(message)
 		return nil
 	case 2: // 二进制消息（音频数据）
-		h.clientAudioQueue <- message
+		// 检查是否初始化了opus解码器
+		if h.opusDecoder != nil {
+			// 解码opus数据为PCM
+			decodedData, err := h.opusDecoder.Decode(message)
+			if err != nil {
+				h.logger.Error(fmt.Sprintf("解码Opus音频失败: %v", err))
+				// 即使解码失败，也尝试将原始数据传递给ASR处理
+				h.clientAudioQueue <- message
+			} else {
+				// 解码成功，将PCM数据放入队列
+				h.logger.Debug(fmt.Sprintf("Opus解码成功: %d bytes -> %d bytes", len(message), len(decodedData)))
+				if len(decodedData) > 0 {
+					h.clientAudioQueue <- decodedData
+				}
+			}
+		} else {
+			// 没有解码器，直接传递原始数据
+			h.clientAudioQueue <- message
+		}
 		return nil
 	default:
 		h.logger.Error(fmt.Sprintf("未知的消息类型: %d", messageType))
@@ -677,4 +708,12 @@ func (h *ConnectionHandler) Close() {
 	close(h.stopChan)
 	close(h.clientAudioQueue)
 	close(h.clientTextQueue)
+
+	// 关闭opus解码器
+	if h.opusDecoder != nil {
+		if err := h.opusDecoder.Close(); err != nil {
+			h.logger.Error(fmt.Sprintf("关闭Opus解码器失败: %v", err))
+		}
+		h.opusDecoder = nil
+	}
 }
