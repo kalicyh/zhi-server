@@ -230,6 +230,11 @@ func (h *ConnectionHandler) processClientAudioMessagesCoroutine() {
 
 // 新增监控ASR结果的方法
 func (h *ConnectionHandler) monitorASRResultsCoroutine() {
+	// 添加重连逻辑的变量
+	const maxRetries = 3
+	retryCount := 0
+	backoffTime := 1 * time.Second
+
 	for {
 		select {
 		case <-h.stopChan:
@@ -239,10 +244,32 @@ func (h *ConnectionHandler) monitorASRResultsCoroutine() {
 			text, err := h.providers.asr.GetFinalResult()
 			if err != nil {
 				errMsg := err.Error()
+
+				// 这些错误可以忽略，继续下一次循环
 				if errMsg == "未初始化流式识别" || errMsg == "ASR识别结果为空" {
 					continue
 				}
-				if strings.Contains(errMsg, "读取最终响应失败") {
+
+				// 对于网络或连接错误，记录并重置
+				if strings.Contains(errMsg, "读取最终响应失败") ||
+					strings.Contains(errMsg, "websocket") {
+
+					retryCount++
+					if retryCount <= maxRetries {
+						h.logger.Warn(fmt.Sprintf("ASR连接出错 (尝试 %d/%d): %v，将在 %v 后重试",
+							retryCount, maxRetries, err, backoffTime))
+						time.Sleep(backoffTime)
+						backoffTime *= 2 // 指数退避
+
+						// 对ASR进行重置
+						h.providers.asr.Reset()
+						continue
+					}
+
+					h.logger.Error(fmt.Sprintf("ASR连接持续失败，达到最大重试次数 (%d): %v", maxRetries, err))
+					h.providers.asr.Reset()
+					retryCount = 0
+					backoffTime = 1 * time.Second
 					continue
 				}
 
@@ -250,6 +277,10 @@ func (h *ConnectionHandler) monitorASRResultsCoroutine() {
 				h.providers.asr.Reset()
 				continue
 			}
+
+			// 成功获取结果后，重置重试计数器
+			retryCount = 0
+			backoffTime = 1 * time.Second
 
 			if text != "" {
 				// 将文本放入队列进行处理
