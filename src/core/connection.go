@@ -507,9 +507,10 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 		}
 	}()
 
-	audioData, duration, err := utils.AudioToPCMData(filepath)
+	// 使用TTS提供者的方法将音频转为Opus格式
+	opusData, duration, err := h.providers.tts.AudioToOpusData(filepath)
 	if err != nil {
-		h.logger.Error(fmt.Sprintf("音频转换失败: %v", err))
+		h.logger.Error(fmt.Sprintf("音频转Opus失败: %v", err))
 		return
 	}
 
@@ -521,18 +522,18 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 		return
 	}
 
-	// 发送音频数据
-	for _, chunk := range audioData {
+	// 发送Opus音频数据
+	for _, chunk := range opusData {
 		if err := h.conn.WriteMessage(2, chunk); err != nil {
-			h.logger.Error(fmt.Sprintf("发送音频数据失败: %v", err))
+			h.logger.Error(fmt.Sprintf("发送Opus音频数据失败: %v", err))
 			return
 		}
 	}
-	h.logger.Info(fmt.Sprintf("TTS发送: \"%s\" (索引:%d)", text, textIndex))
+	h.logger.Info(fmt.Sprintf("TTS发送(Opus): \"%s\" (索引:%d)", text, textIndex))
 	now := time.Now()
 	time.Sleep(time.Duration(duration*1000) * time.Millisecond)
 	spent := time.Since(now)
-	h.logger.Info(fmt.Sprintf("音频数据发送完成, 休眠: %v", spent))
+	h.logger.Info(fmt.Sprintf("Opus音频数据发送完成, 休眠: %v", spent))
 	// 发送TTS状态结束通知
 	if err := h.sendTTSMessage("sentence_end", text, textIndex); err != nil {
 		h.logger.Error(fmt.Sprintf("发送TTS结束状态失败: %v", err))
@@ -577,11 +578,12 @@ func (h *ConnectionHandler) speakAndPlay(text string, textIndex int) error {
 func (h *ConnectionHandler) sendTTSMessage(state string, text string, textIndex int) error {
 	// 发送TTS状态结束通知
 	stateMsg := map[string]interface{}{
-		"type":       "tts",
-		"state":      state,
-		"session_id": h.sessionID,
-		"text":       text,
-		"index":      textIndex,
+		"type":        "tts",
+		"state":       state,
+		"session_id":  h.sessionID,
+		"text":        text,
+		"index":       textIndex,
+		"audio_codec": "opus", // 标识使用Opus编码
 	}
 	data, err := json.Marshal(stateMsg)
 	if err != nil {
