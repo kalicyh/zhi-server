@@ -1,0 +1,76 @@
+# 服务器基础配置(Basic server configuration)
+server:
+  # 服务器监听地址和端口(Server listening address and port)
+  ip: 0.0.0.0
+  port: 8000
+  # 认证配置
+  auth:
+    # 是否启用认证
+    enabled: false
+    # 允许的设备ID列表
+    allowed_devices: []
+    # 有效的token列表
+    tokens: []
+
+log:
+  # 设置控制台输出的日志格式，时间、日志级别、标签、消息
+  log_format: "{time:YYYY-MM-DD HH:mm:ss} - {level} - {message}"
+  # 设置日志等级：INFO、DEBUG
+  log_level: INFO
+  # 设置日志路径
+  log_dir: logs
+  # 设置日志文件
+  log_file: "server.log"
+
+# 音频处理相关设置
+delete_audio: true
+use_private_config: false
+
+# 选择使用的模块
+selected_module:
+  ASR: DoubaoASR
+  TTS: EdgeTTS
+  LLM: ChatGLMLLM
+
+# ASR配置
+ASR:
+  DoubaoASR:
+    type: doubao
+    appid: "你的appid"
+    access_token: 你的access_token
+    cluster: 你的cluster
+    output_dir: tmp/
+
+# TTS配置
+TTS:
+  EdgeTTS:
+    type: edge
+    voice: zh-CN-XiaoxiaoNeural
+    output_dir: "tmp/"
+
+# LLM配置
+LLM:
+    ChatGLMLLM:
+      # 定义LLM API类型
+      type: openai
+      # glm-4-flash 是免费的，但是还是需要注册填写api_key的
+      # 可在这里找到你的api key https://bigmodel.cn/usercenter/proj-mgmt/apikeys
+      model_name: glm-4-flash
+      url: https://open.bigmodel.cn/api/paas/v4/
+      api_key: 你的api_key
+
+# 基础信息
+xiaozhi:
+  type: hello
+  version: 1
+  transport: websocket
+  audio_params:
+    format: opus
+    sample_rate: 24000
+    channels: 1
+    frame_duration: 60
+
+# 退出指令
+CMD_exit:
+  - "退出"
+  - "关闭"
