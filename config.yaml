@@ -67,17 +67,6 @@ LLM:
       url: https://open.bigmodel.cn/api/paas/v4/
       api_key: 你的api_key
 
-# 基础信息
-xiaozhi:
-  type: hello
-  version: 1
-  transport: websocket
-  audio_params:
-    format: opus
-    sample_rate: 24000
-    channels: 1
-    frame_duration: 60
-
 # 退出指令
 CMD_exit:
   - "退出"

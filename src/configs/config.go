@@ -40,8 +40,7 @@ type Config struct {
 	TTS map[string]TTSConfig `yaml:"TTS"`
 	LLM map[string]LLMConfig `yaml:"LLM"`
 
-	Xiaozhi map[string]interface{} `yaml:"xiaozhi"`
-	CMDExit []string               `yaml:"CMD_exit"`
+	CMDExit []string `yaml:"CMD_exit"`
 }
 
 // VADConfig VAD配置结构

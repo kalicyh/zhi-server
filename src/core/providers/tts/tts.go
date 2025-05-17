@@ -6,9 +6,6 @@ import (
 	"path/filepath"
 
 	"xiaozhi-server-go/src/core/providers"
-	"xiaozhi-server-go/src/core/utils"
-
-	"github.com/hajimehoshi/go-mp3"
 )
 
 // Config TTS配置结构
@@ -107,43 +104,4 @@ func Create(name string, config *Config, deleteFile bool) (Provider, error) {
 	}
 
 	return provider, nil
-}
-
-// AudioToOpusData 将音频文件转换为Opus数据块
-func (b *BaseProvider) AudioToOpusData(audioFile string) ([][]byte, float64, error) {
-	// 先将MP3转为PCM
-	pcmData, duration, err := utils.AudioToPCMData(audioFile)
-	if err != nil {
-		return nil, 0, fmt.Errorf("PCM转换失败: %v", err)
-	}
-
-	if len(pcmData) == 0 {
-		return nil, 0, fmt.Errorf("PCM转换结果为空")
-	}
-
-	// 打开MP3文件获取采样率
-	file, err := os.Open(audioFile)
-	if err != nil {
-		return nil, 0, fmt.Errorf("打开音频文件失败: %v", err)
-	}
-	defer file.Close()
-
-	// 检查MP3文件格式是否有效
-	_, err = mp3.NewDecoder(file)
-	if err != nil {
-		return nil, 0, fmt.Errorf("创建MP3解码器失败: %v", err)
-	}
-
-	// 获取采样率 (固定使用24000Hz作为Opus编码的采样率)
-	// 如果采样率不是24000Hz，PCMSlicesToOpusData会处理重采样
-	opusSampleRate := 24000
-	channels := 1
-
-	// 将PCM转换为Opus
-	opusData, err := utils.PCMSlicesToOpusData(pcmData, opusSampleRate, channels, 0)
-	if err != nil {
-		return nil, 0, fmt.Errorf("PCM转Opus失败: %v", err)
-	}
-
-	return opusData, duration, nil
 }

@@ -31,6 +31,17 @@ type ConnectionHandler struct {
 	clientIP     string
 	clientIPInfo map[string]interface{}
 
+	// 客户端音频相关
+	clientAudioFormat        string
+	clientAudioSampleRate    int
+	clientAudioChannels      int
+	clientAudioFrameDuration int
+
+	serverAudioFormat        string // 服务端音频格式
+	serverAudioSampleRate    int
+	serverAudioChannels      int
+	serverAudioFrameDuration int
+
 	// 状态标志
 	clientAbort      bool
 	clientListenMode string
@@ -52,7 +63,6 @@ type ConnectionHandler struct {
 	// 对话相关
 	dialogueManager      *chat.DialogueManager
 	prompt               string
-	welcomeMsg           map[string]interface{}
 	tts_first_text_index int
 	tts_last_text_index  int
 
@@ -106,22 +116,15 @@ func NewConnectionHandler(
 		asrTicker:            time.NewTicker(100 * time.Millisecond), // 每100ms检查一次ASR结果
 		tts_last_text_index:  -1,
 		tts_first_text_index: -1,
+
+		serverAudioFormat:        "opus", // 默认使用Opus格式
+		serverAudioSampleRate:    24000,
+		serverAudioChannels:      1,
+		serverAudioFrameDuration: 60,
 	}
 
 	// 初始化对话管理器
 	handler.dialogueManager = chat.NewDialogueManager(handler.logger, nil)
-
-	// 初始化opus解码器
-	opusDecoder, err := utils.NewOpusDecoder(&utils.OpusDecoderConfig{
-		SampleRate:  24000, // 客户端使用24kHz采样率
-		MaxChannels: 1,     // 单声道音频
-	})
-	if err != nil {
-		logger.Error(fmt.Sprintf("初始化Opus解码器失败: %v", err))
-	} else {
-		handler.opusDecoder = opusDecoder
-		logger.Info("Opus解码器初始化成功")
-	}
 
 	return handler
 }
@@ -133,7 +136,7 @@ func (h *ConnectionHandler) Handle(conn Conn) {
 	h.conn = conn
 
 	// 发送欢迎消息
-	if err := h.sendWelcomeMessage(); err != nil {
+	if err := h.sendHelloMessage(); err != nil {
 		h.logger.Error(fmt.Sprintf("发送欢迎消息失败: %v", err))
 		return
 	}
@@ -174,24 +177,29 @@ func (h *ConnectionHandler) handleMessage(messageType int, message []byte) error
 		h.clientTextQueue <- string(message)
 		return nil
 	case 2: // 二进制消息（音频数据）
-		// 检查是否初始化了opus解码器
-		if h.opusDecoder != nil {
-			// 解码opus数据为PCM
-			decodedData, err := h.opusDecoder.Decode(message)
-			if err != nil {
-				h.logger.Error(fmt.Sprintf("解码Opus音频失败: %v", err))
-				// 即使解码失败，也尝试将原始数据传递给ASR处理
-				h.clientAudioQueue <- message
-			} else {
-				// 解码成功，将PCM数据放入队列
-				h.logger.Debug(fmt.Sprintf("Opus解码成功: %d bytes -> %d bytes", len(message), len(decodedData)))
-				if len(decodedData) > 0 {
-					h.clientAudioQueue <- decodedData
-				}
-			}
-		} else {
-			// 没有解码器，直接传递原始数据
+		if h.clientAudioFormat == "pcm" {
+			// 直接将PCM数据放入队列
 			h.clientAudioQueue <- message
+		} else if h.clientAudioFormat == "opus" {
+			// 检查是否初始化了opus解码器
+			if h.opusDecoder != nil {
+				// 解码opus数据为PCM
+				decodedData, err := h.opusDecoder.Decode(message)
+				if err != nil {
+					h.logger.Error(fmt.Sprintf("解码Opus音频失败: %v", err))
+					// 即使解码失败，也尝试将原始数据传递给ASR处理
+					h.clientAudioQueue <- message
+				} else {
+					// 解码成功，将PCM数据放入队列
+					h.logger.Debug(fmt.Sprintf("Opus解码成功: %d bytes -> %d bytes", len(message), len(decodedData)))
+					if len(decodedData) > 0 {
+						h.clientAudioQueue <- decodedData
+					}
+				}
+			} else {
+				// 没有解码器，直接传递原始数据
+				h.clientAudioQueue <- message
+			}
 		}
 		return nil
 	default:
@@ -337,9 +345,46 @@ func (h *ConnectionHandler) processClientTextMessage(ctx context.Context, text s
 
 // handleHelloMessage 处理欢迎消息
 // 客户端会上传语音格式和采样率等信息
-// 这里可以根据需要进行处理
 func (h *ConnectionHandler) handleHelloMessage(msgMap map[string]interface{}) error {
 	h.logger.Info("收到客户端欢迎消息: " + fmt.Sprintf("%v", msgMap))
+	// 获取客户端编码格式
+	if audioParams, ok := msgMap["audio_params"].(map[string]interface{}); ok {
+		if format, ok := audioParams["format"].(string); ok {
+			h.logger.Info("客户端音频格式: " + format)
+			h.clientAudioFormat = format
+			if format == "pcm" {
+				// 客户端使用PCM格式，服务端也使用PCM格式
+				h.serverAudioFormat = "pcm"
+				h.sendHelloMessage()
+			}
+		}
+		if sampleRate, ok := audioParams["sample_rate"].(float64); ok {
+			h.logger.Info("客户端采样率: " + fmt.Sprintf("%d", int(sampleRate)))
+			h.clientAudioSampleRate = int(sampleRate)
+		}
+		if channels, ok := audioParams["channels"].(float64); ok {
+			h.logger.Info("客户端声道数: " + fmt.Sprintf("%d", int(channels)))
+			h.clientAudioChannels = int(channels)
+		}
+		if frameDuration, ok := audioParams["frame_duration"].(float64); ok {
+			h.logger.Info("客户端帧时长: " + fmt.Sprintf("%d", int(frameDuration)))
+			h.clientAudioFrameDuration = int(frameDuration)
+		}
+	}
+
+	h.closeOpusDecoder()
+	// 初始化opus解码器
+	opusDecoder, err := utils.NewOpusDecoder(&utils.OpusDecoderConfig{
+		SampleRate:  h.clientAudioSampleRate, // 客户端使用24kHz采样率
+		MaxChannels: h.clientAudioChannels,   // 单声道音频
+	})
+	if err != nil {
+		h.logger.Error(fmt.Sprintf("初始化Opus解码器失败: %v", err))
+	} else {
+		h.opusDecoder = opusDecoder
+		h.logger.Info("Opus解码器初始化成功")
+	}
+
 	return nil
 }
 
@@ -561,11 +606,24 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 		}
 	}()
 
+	var audioData [][]byte
+	var duration float64
+	var err error
+
 	// 使用TTS提供者的方法将音频转为Opus格式
-	opusData, duration, err := h.providers.tts.AudioToOpusData(filepath)
-	if err != nil {
-		h.logger.Error(fmt.Sprintf("音频转Opus失败: %v", err))
-		return
+	if h.serverAudioFormat == "pcm" {
+		h.logger.Info("服务端音频格式为PCM，直接发送")
+		audioData, duration, err = utils.AudioToPCMData(filepath)
+		if err != nil {
+			h.logger.Error(fmt.Sprintf("音频转PCM失败: %v", err))
+			return
+		}
+	} else if h.serverAudioFormat == "opus" {
+		audioData, duration, err = utils.AudioToOpusData(filepath)
+		if err != nil {
+			h.logger.Error(fmt.Sprintf("音频转Opus失败: %v", err))
+			return
+		}
 	}
 
 	fmt.Println("音频时长:", duration)
@@ -576,18 +634,18 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 		return
 	}
 
-	// 发送Opus音频数据
-	for _, chunk := range opusData {
+	// 发送音频数据
+	for _, chunk := range audioData {
 		if err := h.conn.WriteMessage(2, chunk); err != nil {
 			h.logger.Error(fmt.Sprintf("发送Opus音频数据失败: %v", err))
 			return
 		}
 	}
-	h.logger.Info(fmt.Sprintf("TTS发送(Opus): \"%s\" (索引:%d)", text, textIndex))
+	h.logger.Info(fmt.Sprintf("TTS发送(%s): \"%s\" (索引:%d)", h.serverAudioFormat, text, textIndex))
 	now := time.Now()
 	time.Sleep(time.Duration(duration*1000) * time.Millisecond)
 	spent := time.Since(now)
-	h.logger.Info(fmt.Sprintf("Opus音频数据发送完成, 休眠: %v", spent))
+	h.logger.Info(fmt.Sprintf("%s音频数据发送完成, 休眠: %v", h.serverAudioFormat, spent))
 	// 发送TTS状态结束通知
 	if err := h.sendTTSMessage("sentence_end", text, textIndex); err != nil {
 		h.logger.Error(fmt.Sprintf("发送TTS结束状态失败: %v", err))
@@ -714,17 +772,34 @@ func splitAtLastPunctuation(text string) (string, int) {
 	return text[:lastIndex+len("。")], lastIndex + len("。")
 }
 
-// sendWelcomeMessage 发送欢迎消息
-func (h *ConnectionHandler) sendWelcomeMessage() error {
-	welcome := h.config.Xiaozhi
-	welcome["session_id"] = h.sessionID
-
-	data, err := json.Marshal(welcome)
+// sendHelloMessage 发送欢迎消息
+func (h *ConnectionHandler) sendHelloMessage() error {
+	hello := make(map[string]interface{})
+	hello["type"] = "hello"
+	hello["version"] = 1
+	hello["transport"] = "websocket"
+	hello["session_id"] = h.sessionID
+	hello["audio_params"] = map[string]interface{}{
+		"format":         h.serverAudioFormat,
+		"sample_rate":    h.serverAudioSampleRate,
+		"channels":       h.serverAudioChannels,
+		"frame_duration": h.serverAudioFrameDuration,
+	}
+	data, err := json.Marshal(hello)
 	if err != nil {
 		return fmt.Errorf("序列化欢迎消息失败: %v", err)
 	}
 
 	return h.conn.WriteMessage(1, data)
+}
+
+func (h *ConnectionHandler) closeOpusDecoder() {
+	if h.opusDecoder != nil {
+		if err := h.opusDecoder.Close(); err != nil {
+			h.logger.Error(fmt.Sprintf("关闭Opus解码器失败: %v", err))
+		}
+		h.opusDecoder = nil
+	}
 }
 
 // Close 清理资源
@@ -734,11 +809,5 @@ func (h *ConnectionHandler) Close() {
 	close(h.clientAudioQueue)
 	close(h.clientTextQueue)
 
-	// 关闭opus解码器
-	if h.opusDecoder != nil {
-		if err := h.opusDecoder.Close(); err != nil {
-			h.logger.Error(fmt.Sprintf("关闭Opus解码器失败: %v", err))
-		}
-		h.opusDecoder = nil
-	}
+	h.closeOpusDecoder()
 }

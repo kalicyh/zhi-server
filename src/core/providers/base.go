@@ -27,8 +27,6 @@ type ASRProvider interface {
 // TTSProvider 语音合成提供者接口
 type TTSProvider interface {
 	Provider
-	// 将音频文件转换为Opus数据块
-	AudioToOpusData(audioFile string) ([][]byte, float64, error)
 
 	// 合成音频并返回文件路径
 	ToTTS(text string) (string, error)
