@@ -10,12 +10,14 @@ import (
 
 // Config TTS配置结构
 type Config struct {
-	Type       string                 `yaml:"type"`
-	OutputDir  string                 `yaml:"output_dir"`
-	Voice      string                 `yaml:"voice,omitempty"`
-	Format     string                 `yaml:"format,omitempty"`
-	SampleRate int                    `yaml:"sample_rate,omitempty"`
-	Extra      map[string]interface{} `yaml:",inline"`
+	Type       string `yaml:"type"`
+	OutputDir  string `yaml:"output_dir"`
+	Voice      string `yaml:"voice,omitempty"`
+	Format     string `yaml:"format,omitempty"`
+	SampleRate int    `yaml:"sample_rate,omitempty"`
+	AppID      string `yaml:"appid"`
+	Token      string `yaml:"token"`
+	Cluster    string `yaml:"cluster"`
 }
 
 // Provider TTS提供者接口

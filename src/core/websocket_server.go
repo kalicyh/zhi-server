@@ -274,7 +274,9 @@ func (ws *WebSocketServer) initializeProviders() error {
 				Voice:     ttsCfg.Voice,
 				Format:    ttsCfg.Format,
 				OutputDir: ttsCfg.OutputDir,
-				Extra:     ttsCfg.Extra,
+				AppID:     ttsCfg.AppID,
+				Token:     ttsCfg.Token,
+				Cluster:   ttsCfg.Cluster,
 			}, ws.config.DeleteAudio)
 			if err != nil {
 				ws.logger.Error(fmt.Sprintf("初始化TTS失败: %v", err))

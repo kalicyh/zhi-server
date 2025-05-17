@@ -58,11 +58,13 @@ type ASRConfig map[string]interface{}
 
 // TTSConfig TTS配置结构
 type TTSConfig struct {
-	Type      string                 `yaml:"type"`
-	Voice     string                 `yaml:"voice"`
-	Format    string                 `yaml:"format"`
-	OutputDir string                 `yaml:"output_dir"`
-	Extra     map[string]interface{} `yaml:",inline"`
+	Type      string `yaml:"type"`
+	Voice     string `yaml:"voice"`
+	Format    string `yaml:"format"`
+	OutputDir string `yaml:"output_dir"`
+	AppID     string `yaml:"appid"`
+	Token     string `yaml:"token"`
+	Cluster   string `yaml:"cluster"`
 }
 
 // LLMConfig LLM配置结构

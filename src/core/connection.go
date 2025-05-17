@@ -424,11 +424,7 @@ func (h *ConnectionHandler) handleChatMessage(ctx context.Context, text string) 
 		if segment, chars := splitAtLastPunctuation(currentText); chars > 0 {
 			textIndex++
 			h.recode_first_last_text(segment, textIndex)
-			if err := h.speakAndPlay(segment, textIndex); err != nil {
-				h.logger.Error(fmt.Sprintf("语音合成失败:%s %v", segment, err))
-			} else {
-				h.logger.Info("语音合成成功: " + segment)
-			}
+			h.speakAndPlay(segment, textIndex)
 			processedChars += chars
 		}
 	}
@@ -438,11 +434,7 @@ func (h *ConnectionHandler) handleChatMessage(ctx context.Context, text string) 
 	if remainingText != "" {
 		textIndex++
 		h.recode_first_last_text(remainingText, textIndex)
-		if err := h.speakAndPlay(remainingText, textIndex); err != nil {
-			h.logger.Error(fmt.Sprintf("语音合成失败: %v", err))
-		} else {
-			h.logger.Info("语音合成成功: " + remainingText)
-		}
+		h.speakAndPlay(remainingText, textIndex)
 	}
 
 	// 分析回复并发送相应的情绪
@@ -549,8 +541,10 @@ func (h *ConnectionHandler) processTTSTask(text string, textIndex int) {
 	// 生成语音文件
 	filepath, err := h.providers.tts.ToTTS(text)
 	if err != nil {
-		h.logger.Error(fmt.Sprintf("TTS转换失败: %v", err))
+		h.logger.Error(fmt.Sprintf("TTS转换失败:text(%s) %v", text, err))
 		return
+	} else {
+		h.logger.Info(fmt.Sprintf("TTS转换成功: text(%s), index(%d) %s", text, textIndex, filepath))
 	}
 
 	h.audioMessagesQueue <- struct {

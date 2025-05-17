@@ -29,7 +29,7 @@ use_private_config: false
 # 选择使用的模块
 selected_module:
   ASR: DoubaoASR
-  TTS: EdgeTTS
+  TTS: DoubaoTTS
   LLM: ChatGLMLLM
 
 # ASR配置
@@ -43,10 +43,18 @@ ASR:
 
 # TTS配置
 TTS:
+  # EdgeTTS 是微软的语音合成服务，免费使用，容易合成失败，并发未测试
   EdgeTTS:
     type: edge
     voice: zh-CN-XiaoxiaoNeural
     output_dir: "tmp/"
+  DoubaoTTS:
+    type: doubao
+    voice: zh_female_wanwanxiaohe_moon_bigtts           # 湾湾小何
+    output_dir: "tmp/"
+    appid: "你的appid"
+    token: 你的access_token
+    cluster: 你的cluster
 
 # LLM配置
 LLM:

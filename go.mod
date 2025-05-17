@@ -13,5 +13,6 @@ require (
 require (
 	github.com/go-resty/resty/v2 v2.12.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/satori/go.uuid v1.2.0 // indirect
 	golang.org/x/net v0.22.0 // indirect
 )
