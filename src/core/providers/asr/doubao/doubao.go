@@ -58,6 +58,7 @@ type Provider struct {
 	wsURL         string
 	chunkDuration int
 	connectID     string
+	logger        *utils.Logger // 添加日志记录器
 
 	// 配置
 	modelName     string
@@ -156,6 +157,9 @@ func NewProvider(config *asr.Config, deleteFile bool) (*Provider, error) {
 	// 创建连接ID
 	connectID := fmt.Sprintf("%d", time.Now().UnixNano())
 
+	// 创建一个简单的日志输出，不使用文件记录
+	logger := &utils.Logger{}
+
 	provider := &Provider{
 		BaseProvider:  base,
 		appID:         appID,
@@ -166,6 +170,7 @@ func NewProvider(config *asr.Config, deleteFile bool) (*Provider, error) {
 		wsURL:         "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
 		chunkDuration: 200, // 固定使用200ms分片
 		connectID:     connectID,
+		logger:        logger, // 使用简单的logger
 
 		// 默认配置
 		modelName:     "bigmodel",
@@ -528,10 +533,25 @@ func (p *Provider) GetFinalResult() (string, error) {
 		return "", fmt.Errorf("未初始化流式识别")
 	}
 
+	// 使用SetReadDeadline来防止永久阻塞
+	if err := p.conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		p.Reset() // 连接出现问题，直接重置
+		return "", fmt.Errorf("设置读取超时失败: %v", err)
+	}
+
 	// 读取最终响应
 	_, response, err := p.conn.ReadMessage()
 	if err != nil {
+		// 连接失败，立即重置
+		p.Reset() // 重置连接状态
 		return "", fmt.Errorf("读取最终响应失败: %v", err)
+	}
+
+	// 成功读取后重置超时
+	if err := p.conn.SetReadDeadline(time.Time{}); err != nil {
+		if p.logger != nil {
+			p.logger.Warn(fmt.Sprintf("重置读取超时失败: %v", err))
+		}
 	}
 
 	finalResult, err := p.parseResponse(response)
@@ -581,9 +601,22 @@ func (p *Provider) GetFinalResult() (string, error) {
 // Reset 重置ASR状态
 func (p *Provider) Reset() error {
 	if p.conn != nil {
-		p.conn.Close()
+		// 先设置一个短超时时间，避免关闭时卡住
+		_ = p.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+
+		// 尝试发送关闭消息，忽略错误
+		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client closing connection")
+		_ = p.conn.WriteMessage(websocket.CloseMessage, closeMsg)
+
+		// 关闭连接
+		err := p.conn.Close()
+		if err != nil && p.logger != nil {
+			p.logger.Warn(fmt.Sprintf("关闭WebSocket连接时出错: %v", err))
+		}
+
 		p.conn = nil
 	}
+
 	p.reqID = ""
 	p.isStreaming = false
 	p.result = ""
@@ -591,6 +624,10 @@ func (p *Provider) Reset() error {
 
 	// 重置音频缓冲区
 	p.InitAudioProcessing()
+
+	if p.logger != nil {
+		p.logger.Info("ASR状态已重置")
+	}
 	return nil
 }
 
@@ -607,8 +644,24 @@ func (p *Provider) Initialize() error {
 func (p *Provider) Cleanup() error {
 	// 确保WebSocket连接关闭
 	if p.conn != nil {
-		p.conn.Close()
+		// 先设置一个短超时时间，避免关闭时卡住
+		_ = p.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+
+		// 尝试发送关闭消息，忽略错误
+		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client ending session")
+		_ = p.conn.WriteMessage(websocket.CloseMessage, closeMsg)
+
+		// 关闭连接
+		err := p.conn.Close()
+		if err != nil && p.logger != nil {
+			p.logger.Warn(fmt.Sprintf("清理时关闭WebSocket连接出错: %v", err))
+		}
+
 		p.conn = nil
+	}
+
+	if p.logger != nil {
+		p.logger.Info("ASR资源已清理")
 	}
 	return nil
 }

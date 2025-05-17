@@ -45,8 +45,9 @@ type ConnectionHandler struct {
 		haveVoiceLast time.Time
 		noVoiceLast   time.Time
 	}
-	asrTicker          *time.Ticker // 用于定时检查ASR结果
-	asr_server_receive bool         // 是否接收ASR结果
+	asrTicker          *time.Ticker       // 用于定时检查ASR结果
+	asr_server_receive bool               // 是否接收ASR结果
+	opusDecoder        *utils.OpusDecoder // Opus解码器
 
 	// 对话相关
 	dialogueManager      *chat.DialogueManager
@@ -110,6 +111,18 @@ func NewConnectionHandler(
 	// 初始化对话管理器
 	handler.dialogueManager = chat.NewDialogueManager(handler.logger, nil)
 
+	// 初始化opus解码器
+	opusDecoder, err := utils.NewOpusDecoder(&utils.OpusDecoderConfig{
+		SampleRate:  24000, // 客户端使用24kHz采样率
+		MaxChannels: 1,     // 单声道音频
+	})
+	if err != nil {
+		logger.Error(fmt.Sprintf("初始化Opus解码器失败: %v", err))
+	} else {
+		handler.opusDecoder = opusDecoder
+		logger.Info("Opus解码器初始化成功")
+	}
+
 	return handler
 }
 
@@ -161,7 +174,25 @@ func (h *ConnectionHandler) handleMessage(messageType int, message []byte) error
 		h.clientTextQueue <- string(message)
 		return nil
 	case 2: // 二进制消息（音频数据）
-		h.clientAudioQueue <- message
+		// 检查是否初始化了opus解码器
+		if h.opusDecoder != nil {
+			// 解码opus数据为PCM
+			decodedData, err := h.opusDecoder.Decode(message)
+			if err != nil {
+				h.logger.Error(fmt.Sprintf("解码Opus音频失败: %v", err))
+				// 即使解码失败，也尝试将原始数据传递给ASR处理
+				h.clientAudioQueue <- message
+			} else {
+				// 解码成功，将PCM数据放入队列
+				h.logger.Debug(fmt.Sprintf("Opus解码成功: %d bytes -> %d bytes", len(message), len(decodedData)))
+				if len(decodedData) > 0 {
+					h.clientAudioQueue <- decodedData
+				}
+			}
+		} else {
+			// 没有解码器，直接传递原始数据
+			h.clientAudioQueue <- message
+		}
 		return nil
 	default:
 		h.logger.Error(fmt.Sprintf("未知的消息类型: %d", messageType))
@@ -199,6 +230,11 @@ func (h *ConnectionHandler) processClientAudioMessagesCoroutine() {
 
 // 新增监控ASR结果的方法
 func (h *ConnectionHandler) monitorASRResultsCoroutine() {
+	// 添加重连逻辑的变量
+	const maxRetries = 3
+	retryCount := 0
+	backoffTime := 1 * time.Second
+
 	for {
 		select {
 		case <-h.stopChan:
@@ -208,10 +244,32 @@ func (h *ConnectionHandler) monitorASRResultsCoroutine() {
 			text, err := h.providers.asr.GetFinalResult()
 			if err != nil {
 				errMsg := err.Error()
+
+				// 这些错误可以忽略，继续下一次循环
 				if errMsg == "未初始化流式识别" || errMsg == "ASR识别结果为空" {
 					continue
 				}
-				if strings.Contains(errMsg, "读取最终响应失败") {
+
+				// 对于网络或连接错误，记录并重置
+				if strings.Contains(errMsg, "读取最终响应失败") ||
+					strings.Contains(errMsg, "websocket") {
+
+					retryCount++
+					if retryCount <= maxRetries {
+						h.logger.Warn(fmt.Sprintf("ASR连接出错 (尝试 %d/%d): %v，将在 %v 后重试",
+							retryCount, maxRetries, err, backoffTime))
+						time.Sleep(backoffTime)
+						backoffTime *= 2 // 指数退避
+
+						// 对ASR进行重置
+						h.providers.asr.Reset()
+						continue
+					}
+
+					h.logger.Error(fmt.Sprintf("ASR连接持续失败，达到最大重试次数 (%d): %v", maxRetries, err))
+					h.providers.asr.Reset()
+					retryCount = 0
+					backoffTime = 1 * time.Second
 					continue
 				}
 
@@ -219,6 +277,10 @@ func (h *ConnectionHandler) monitorASRResultsCoroutine() {
 				h.providers.asr.Reset()
 				continue
 			}
+
+			// 成功获取结果后，重置重试计数器
+			retryCount = 0
+			backoffTime = 1 * time.Second
 
 			if text != "" {
 				// 将文本放入队列进行处理
@@ -499,9 +561,10 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 		}
 	}()
 
-	audioData, duration, err := utils.AudioToPCMData(filepath)
+	// 使用TTS提供者的方法将音频转为Opus格式
+	opusData, duration, err := h.providers.tts.AudioToOpusData(filepath)
 	if err != nil {
-		h.logger.Error(fmt.Sprintf("音频转换失败: %v", err))
+		h.logger.Error(fmt.Sprintf("音频转Opus失败: %v", err))
 		return
 	}
 
@@ -513,18 +576,18 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 		return
 	}
 
-	// 发送音频数据
-	for _, chunk := range audioData {
+	// 发送Opus音频数据
+	for _, chunk := range opusData {
 		if err := h.conn.WriteMessage(2, chunk); err != nil {
-			h.logger.Error(fmt.Sprintf("发送音频数据失败: %v", err))
+			h.logger.Error(fmt.Sprintf("发送Opus音频数据失败: %v", err))
 			return
 		}
 	}
-	h.logger.Info(fmt.Sprintf("TTS发送: \"%s\" (索引:%d)", text, textIndex))
+	h.logger.Info(fmt.Sprintf("TTS发送(Opus): \"%s\" (索引:%d)", text, textIndex))
 	now := time.Now()
 	time.Sleep(time.Duration(duration*1000) * time.Millisecond)
 	spent := time.Since(now)
-	h.logger.Info(fmt.Sprintf("音频数据发送完成, 休眠: %v", spent))
+	h.logger.Info(fmt.Sprintf("Opus音频数据发送完成, 休眠: %v", spent))
 	// 发送TTS状态结束通知
 	if err := h.sendTTSMessage("sentence_end", text, textIndex); err != nil {
 		h.logger.Error(fmt.Sprintf("发送TTS结束状态失败: %v", err))
@@ -571,11 +634,12 @@ func (h *ConnectionHandler) speakAndPlay(text string, textIndex int) error {
 func (h *ConnectionHandler) sendTTSMessage(state string, text string, textIndex int) error {
 	// 发送TTS状态结束通知
 	stateMsg := map[string]interface{}{
-		"type":       "tts",
-		"state":      state,
-		"session_id": h.sessionID,
-		"text":       text,
-		"index":      textIndex,
+		"type":        "tts",
+		"state":       state,
+		"session_id":  h.sessionID,
+		"text":        text,
+		"index":       textIndex,
+		"audio_codec": "opus", // 标识使用Opus编码
 	}
 	data, err := json.Marshal(stateMsg)
 	if err != nil {
@@ -669,4 +733,12 @@ func (h *ConnectionHandler) Close() {
 	close(h.stopChan)
 	close(h.clientAudioQueue)
 	close(h.clientTextQueue)
+
+	// 关闭opus解码器
+	if h.opusDecoder != nil {
+		if err := h.opusDecoder.Close(); err != nil {
+			h.logger.Error(fmt.Sprintf("关闭Opus解码器失败: %v", err))
+		}
+		h.opusDecoder = nil
+	}
 }

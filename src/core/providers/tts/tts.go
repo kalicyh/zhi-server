@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 
 	"xiaozhi-server-go/src/core/providers"
+	"xiaozhi-server-go/src/core/utils"
+
+	"github.com/hajimehoshi/go-mp3"
 )
 
 // Config TTS配置结构
@@ -106,94 +109,41 @@ func Create(name string, config *Config, deleteFile bool) (Provider, error) {
 	return provider, nil
 }
 
-func (bp *BaseProvider) AudioToOpusData(audioFile string) ([][]byte, float64, error) {
-	/**
+// AudioToOpusData 将音频文件转换为Opus数据块
+func (b *BaseProvider) AudioToOpusData(audioFile string) ([][]byte, float64, error) {
+	// 先将MP3转为PCM
+	pcmData, duration, err := utils.AudioToPCMData(audioFile)
+	if err != nil {
+		return nil, 0, fmt.Errorf("PCM转换失败: %v", err)
+	}
+
+	if len(pcmData) == 0 {
+		return nil, 0, fmt.Errorf("PCM转换结果为空")
+	}
+
+	// 打开MP3文件获取采样率
 	file, err := os.Open(audioFile)
 	if err != nil {
 		return nil, 0, fmt.Errorf("打开音频文件失败: %v", err)
 	}
 	defer file.Close()
 
-	decoder, err := mp3.NewDecoder(file)
+	// 检查MP3文件格式是否有效
+	_, err = mp3.NewDecoder(file)
 	if err != nil {
 		return nil, 0, fmt.Errorf("创建MP3解码器失败: %v", err)
 	}
 
-	mp3SampleRate := decoder.SampleRate()
+	// 获取采样率 (固定使用24000Hz作为Opus编码的采样率)
+	// 如果采样率不是24000Hz，PCMSlicesToOpusData会处理重采样
+	opusSampleRate := 24000
+	channels := 1
 
-	// 检查采样率是否支持
-	supportedRates := map[int]bool{8000: true, 12000: true, 16000: true, 24000: true, 48000: true}
-	if !supportedRates[mp3SampleRate] {
-		return nil, 0, fmt.Errorf("MP3采样率 %dHz 不被Opus直接支持，需要重采样", mp3SampleRate)
-	}
-
-	pcmBytes := make([]byte, decoder.Length())
-	if _, err := io.ReadFull(decoder, pcmBytes); err != nil {
-		return nil, 0, fmt.Errorf("读取PCM数据失败: %v", err)
-	}
-
-	// go-mp3 解码为 16-bit little-endian stereo PCM
-	// 将 stereo []byte 转换为 mono []int16
-	numStereoSamples := len(pcmBytes) / 2 // 每个样本2字节
-	if numStereoSamples == 0 {
-		return [][]byte{}, 0, nil // 空音频
-	}
-	numMonoSamples := numStereoSamples / 2
-	pcmMonoInt16 := make([]int16, numMonoSamples)
-
-	for i := 0; i < numMonoSamples; i++ {
-		leftSample := int16(pcmBytes[i*4+0]) | (int16(pcmBytes[i*4+1]) << 8)
-		rightSample := int16(pcmBytes[i*4+2]) | (int16(pcmBytes[i*4+3]) << 8)
-		// 混合为单声道 (简单平均)
-		pcmMonoInt16[i] = int16((int32(leftSample) + int32(rightSample)) / 2)
-	}
-
-	// 创建Opus编码器参数
-	params := opuspkg.NewOpusParams(mp3SampleRate, 1, 20) // 20ms帧长
-	encoder, err := opuspkg.NewEncoder(params)
+	// 将PCM转换为Opus
+	opusData, err := utils.PCMSlicesToOpusData(pcmData, opusSampleRate, channels, 0)
 	if err != nil {
-		return nil, 0, fmt.Errorf("创建Opus编码器失败: %v", err)
-	}
-	defer encoder.Close()
-
-	// 准备PCM数据供编码
-	samplesPerFrame := (mp3SampleRate * 20) / 1000 // 20ms帧长
-	var opusPackets [][]byte
-
-	for i := 0; i < len(pcmMonoInt16); i += samplesPerFrame {
-		end := i + samplesPerFrame
-		var pcmFrame []byte
-
-		if end > len(pcmMonoInt16) {
-			// 处理最后一个不完整帧，用静音填充
-			frame := make([]int16, samplesPerFrame)
-			copy(frame, pcmMonoInt16[i:])
-			// 转换为字节切片
-			pcmFrame = make([]byte, samplesPerFrame*2)
-			for j, sample := range frame {
-				pcmFrame[j*2] = byte(sample)
-				pcmFrame[j*2+1] = byte(sample >> 8)
-			}
-		} else {
-			// 转换完整帧为字节切片
-			pcmFrame = make([]byte, samplesPerFrame*2)
-			for j, sample := range pcmMonoInt16[i:end] {
-				pcmFrame[j*2] = byte(sample)
-				pcmFrame[j*2+1] = byte(sample >> 8)
-			}
-		}
-
-		// 编码PCM帧
-		encoded, err := encoder.Encode(pcmFrame)
-		if err != nil {
-			return nil, 0, fmt.Errorf("Opus编码失败: %v", err)
-		}
-
-		opusPackets = append(opusPackets, encoded)
+		return nil, 0, fmt.Errorf("PCM转Opus失败: %v", err)
 	}
 
-	duration := float64(len(pcmMonoInt16)) / float64(mp3SampleRate)
-	return opusPackets, duration, nil
-	*/
-	return nil, 0, fmt.Errorf("音频转Opus格式的功能尚未实现")
+	return opusData, duration, nil
 }
