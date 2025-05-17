@@ -3,6 +3,7 @@ module xiaozhi-server-go
 go 1.24
 
 require (
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hajimehoshi/go-mp3 v0.3.4
 	github.com/qrtc/opus-go v0.0.1
@@ -13,7 +14,5 @@ require (
 
 require (
 	github.com/go-resty/resty/v2 v2.12.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
-	github.com/satori/go.uuid v1.2.0 // indirect
 	golang.org/x/net v0.22.0 // indirect
 )

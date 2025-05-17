@@ -15,8 +15,8 @@ import (
 
 	"xiaozhi-server-go/src/core/providers/tts"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
-	uuid "github.com/satori/go.uuid"
 )
 
 var (
@@ -93,7 +93,7 @@ func (p *Provider) ToTTS(text string) (string, error) {
 			"pitch_ratio":  1.0,
 		},
 		"request": {
-			"reqid":     uuid.NewV4().String(),
+			"reqid":     uuid.New().String(),
 			"text":      text,
 			"text_type": "plain",
 			"operation": "submit", // 使用流式合成
