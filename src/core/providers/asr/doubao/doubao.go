@@ -7,8 +7,10 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"xiaozhi-server-go/src/core/providers/asr"
@@ -72,6 +74,7 @@ type Provider struct {
 	reqID       string
 	result      string
 	err         error
+	connMutex   sync.Mutex // 添加互斥锁保护连接状态
 }
 
 // requestPayload 请求数据结构
@@ -165,7 +168,6 @@ func NewProvider(config *asr.Config, deleteFile bool) (*Provider, error) {
 		connectID:     connectID,
 		logger:        logger, // 使用简单的logger
 
-
 		// 默认配置
 		modelName:     "bigmodel",
 		endWindowSize: 800,
@@ -184,6 +186,7 @@ func (p *Provider) SetOnResult(fn func(result string)) error {
 	p.BaseProvider.OnAsrResult = fn
 	return nil
 }
+
 // 读取根目录下的mp3文件，测试Transcribe方法
 func (p *Provider) TestTranscribe() (string, error) {
 	fmt.Println("TestTranscribe called")
@@ -387,15 +390,37 @@ func (p *Provider) AddAudio(data []byte) error {
 // AddAudioWithContext 带上下文的音频数据添加
 func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 	//fmt.Println("AddAudioWithContext called, data length: ", len(data))
-	if !p.isStreaming {
+
+	// 使用锁检查状态
+	p.connMutex.Lock()
+	isStreaming := p.isStreaming
+	p.connMutex.Unlock()
+
+	if !isStreaming {
 		fmt.Print("开始流式识别\n")
+		// 加锁保护连接初始化
+		p.connMutex.Lock()
+		defer p.connMutex.Unlock()
+
+		// 双重检查，避免并发初始化
+		if p.isStreaming {
+			return nil
+		}
+
 		// 初始化流式识别
 		p.InitAudioProcessing()
 		p.result = ""
 		p.err = nil
 
+		// 确保旧连接已关闭
+		if p.conn != nil {
+			p.closeConnection()
+		}
+
 		// 建立WebSocket连接
-		dialer := websocket.Dialer{}
+		dialer := websocket.Dialer{
+			HandshakeTimeout: 10 * time.Second, // 设置握手超时
+		}
 		headers := map[string][]string{
 			"X-Api-App-Key":     {p.appID},
 			"X-Api-Access-Key":  {p.accessToken},
@@ -403,10 +428,34 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 			"X-Api-Connect-Id":  {p.connectID},
 		}
 
-		conn, _, err := dialer.DialContext(ctx, p.wsURL, headers)
-		if err != nil {
-			return fmt.Errorf("WebSocket连接失败: %v", err)
+		// 重试机制
+		var conn *websocket.Conn
+		var resp *http.Response
+		var err error
+		maxRetries := 2
+
+		for i := 0; i <= maxRetries; i++ {
+			conn, resp, err = dialer.DialContext(ctx, p.wsURL, headers)
+			if err == nil {
+				break
+			}
+
+			if i < maxRetries {
+				backoffTime := time.Duration(500*(i+1)) * time.Millisecond
+				fmt.Printf("WebSocket连接失败(尝试%d/%d): %v, 将在%v后重试\n",
+					i+1, maxRetries+1, err, backoffTime)
+				time.Sleep(backoffTime)
+			}
 		}
+
+		if err != nil {
+			statusCode := 0
+			if resp != nil {
+				statusCode = resp.StatusCode
+			}
+			return fmt.Errorf("WebSocket连接失败(状态码:%d): %v", statusCode, err)
+		}
+
 		p.conn = conn
 
 		// 发送初始请求
@@ -463,13 +512,17 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 			for {
 				_, response, err := p.conn.ReadMessage()
 				if err != nil {
+					p.connMutex.Lock()
 					p.err = fmt.Errorf("读取响应失败: %v", err)
+					p.connMutex.Unlock()
 					return
 				}
 
 				result, err := p.parseResponse(response)
 				if err != nil {
+					p.connMutex.Lock()
 					p.err = fmt.Errorf("解析响应失败: %v", err)
+					p.connMutex.Unlock()
 					return
 				}
 
@@ -477,13 +530,17 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 
 				payloadMsgData, err := json.Marshal(result["payload_msg"])
 				if err != nil {
+					p.connMutex.Lock()
 					p.err = fmt.Errorf("重新序列化响应payload_msg失败: %v", err)
-					return 
+					p.connMutex.Unlock()
+					return
 				}
 
 				if err := json.Unmarshal(payloadMsgData, &respPayload); err != nil {
+					p.connMutex.Lock()
 					p.err = fmt.Errorf("解析最终响应payload失败: %v. Raw: %s", err, string(payloadMsgData))
-					return 
+					p.connMutex.Unlock()
+					return
 				}
 
 				if respPayload.Code == 20000000 || respPayload.Code == 0 {
@@ -492,13 +549,16 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 						//fmt.Println("识别结果为空")
 					} else {
 						//fmt.Printf("识别结果: %s ,code: %d\n", respPayload.Result.Text, respPayload.Code)
+						p.connMutex.Lock()
 						p.result = respPayload.Result.Text
+						p.connMutex.Unlock()
+
 						if p.BaseProvider.OnAsrResult != nil {
 							p.BaseProvider.OnAsrResult(respPayload.Result.Text)
 						}
 						return
 					}
-				} 
+				}
 			}
 		}()
 
@@ -535,6 +595,22 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 	return nil
 }
 
+func (p *Provider) closeConnection() {
+	if p.conn != nil {
+		_ = p.conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+
+		// 尝试发送关闭消息
+		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client closing connection")
+		_ = p.conn.WriteMessage(websocket.CloseMessage, closeMsg)
+
+		// 关闭连接
+		_ = p.conn.Close()
+		p.conn = nil
+
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // sendCurrentBuffer 发送当前缓冲区的数据
 func (p *Provider) sendCurrentBuffer(isLast bool) error {
 	buffer := p.GetAudioBuffer()
@@ -569,24 +645,12 @@ func (p *Provider) sendCurrentBuffer(isLast bool) error {
 
 // Reset 重置ASR状态
 func (p *Provider) Reset() error {
+	// 使用锁保护状态变更
+	p.connMutex.Lock()
+	defer p.connMutex.Unlock()
+
 	p.isStreaming = false
-
-	if p.conn != nil {
-		// 先设置一个短超时时间，避免关闭时卡住
-		_ = p.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-
-		// 尝试发送关闭消息，忽略错误
-		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client closing connection")
-		_ = p.conn.WriteMessage(websocket.CloseMessage, closeMsg)
-
-		// 关闭连接
-		err := p.conn.Close()
-		if err != nil && p.logger != nil {
-			p.logger.Warn(fmt.Sprintf("关闭WebSocket连接时出错: %v", err))
-		}
-
-		p.conn = nil
-	}
+	p.closeConnection()
 
 	p.reqID = ""
 	p.result = ""
@@ -612,23 +676,12 @@ func (p *Provider) Initialize() error {
 
 // Cleanup 实现Provider接口的Cleanup方法
 func (p *Provider) Cleanup() error {
+	// 使用锁保护状态变更
+	p.connMutex.Lock()
+	defer p.connMutex.Unlock()
+
 	// 确保WebSocket连接关闭
-	if p.conn != nil {
-		// 先设置一个短超时时间，避免关闭时卡住
-		_ = p.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-
-		// 尝试发送关闭消息，忽略错误
-		closeMsg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client ending session")
-		_ = p.conn.WriteMessage(websocket.CloseMessage, closeMsg)
-
-		// 关闭连接
-		err := p.conn.Close()
-		if err != nil && p.logger != nil {
-			p.logger.Warn(fmt.Sprintf("清理时关闭WebSocket连接出错: %v", err))
-		}
-
-		p.conn = nil
-	}
+	p.closeConnection()
 
 	if p.logger != nil {
 		p.logger.Info("ASR资源已清理")
