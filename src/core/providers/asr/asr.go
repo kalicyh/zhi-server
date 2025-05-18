@@ -2,7 +2,6 @@ package asr
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"math"
 	"time"
@@ -19,8 +18,7 @@ type Config struct {
 // Provider ASR提供者接口
 type Provider interface {
 	providers.Provider
-	// Transcribe 将音频数据转换为文本
-	Transcribe(ctx context.Context, audioData []byte) (string, error)
+
 }
 
 // BaseProvider ASR基础实现
@@ -35,6 +33,8 @@ type BaseProvider struct {
 	// 静音检测配置
 	silenceThreshold float64 // 能量阈值
 	silenceDuration  int     // 静音持续时间(ms)
+
+	OnAsrResult func(result string)
 }
 
 // Config 获取配置
@@ -67,6 +67,7 @@ func NewBaseProvider(config *Config, deleteFile bool) *BaseProvider {
 	return &BaseProvider{
 		config:     config,
 		deleteFile: deleteFile,
+		OnAsrResult: nil,
 	}
 }
 
@@ -153,32 +154,3 @@ func (p *BaseProvider) IsEndOfSpeech() bool {
 	return false
 }
 
-// SaveAudioData 保存音频数据到文件
-func SaveAudioData(data []byte, filename string) error {
-	// TODO: 实现音频数据保存逻辑
-	return nil
-}
-
-// LoadAudioData 从文件加载音频数据
-func LoadAudioData(filename string) ([]byte, error) {
-	// TODO: 实现音频数据加载逻辑
-	return nil, nil
-}
-
-// ConvertAudioFormat 转换音频格式
-func ConvertAudioFormat(data []byte, fromFormat, toFormat string) ([]byte, error) {
-	// TODO: 实现音频格式转换逻辑
-	return nil, nil
-}
-
-// GetSampleRate 获取音频采样率
-func GetSampleRate(data []byte) (int, error) {
-	// TODO: 实现获取采样率逻辑
-	return 16000, nil
-}
-
-// ResampleAudio 重采样音频
-func ResampleAudio(data []byte, targetSampleRate int) ([]byte, error) {
-	// TODO: 实现音频重采样逻辑
-	return nil, nil
-}

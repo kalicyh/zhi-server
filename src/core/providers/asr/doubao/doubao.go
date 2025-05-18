@@ -52,7 +52,6 @@ type Provider struct {
 	*asr.BaseProvider
 	appID         string
 	accessToken   string
-	resourceID    string
 	outputDir     string
 	host          string
 	wsURL         string
@@ -140,11 +139,6 @@ func NewProvider(config *asr.Config, deleteFile bool) (*Provider, error) {
 		return nil, fmt.Errorf("缺少access_token配置")
 	}
 
-	resourceID, ok := config.Data["cluster"].(string)
-	if !ok {
-		return nil, fmt.Errorf("缺少resource_id配置")
-	}
-
 	// 确保输出目录存在
 	outputDir, _ := config.Data["output_dir"].(string)
 	if outputDir == "" {
@@ -164,13 +158,13 @@ func NewProvider(config *asr.Config, deleteFile bool) (*Provider, error) {
 		BaseProvider:  base,
 		appID:         appID,
 		accessToken:   accessToken,
-		resourceID:    resourceID,
 		outputDir:     outputDir,
 		host:          "openspeech.bytedance.com",
 		wsURL:         "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
 		chunkDuration: 200, // 固定使用200ms分片
 		connectID:     connectID,
 		logger:        logger, // 使用简单的logger
+
 
 		// 默认配置
 		modelName:     "bigmodel",
@@ -186,6 +180,10 @@ func NewProvider(config *asr.Config, deleteFile bool) (*Provider, error) {
 	return provider, nil
 }
 
+func (p *Provider) SetOnResult(fn func(result string)) error {
+	p.BaseProvider.OnAsrResult = fn
+	return nil
+}
 // 读取根目录下的mp3文件，测试Transcribe方法
 func (p *Provider) TestTranscribe() (string, error) {
 	fmt.Println("TestTranscribe called")
@@ -212,7 +210,7 @@ func (p *Provider) TestTranscribe() (string, error) {
 		fmt.Print("result is ", result, "\n")
 	}
 
-	return p.result, nil
+	return result, nil
 }
 
 // Transcribe 实现asr.Provider接口的转录方法
@@ -242,9 +240,8 @@ func (p *Provider) Transcribe(ctx context.Context, audioData []byte) (string, er
 	if err := p.AddAudioWithContext(ctx, audioData); err != nil {
 		return "", err
 	}
-
-	// 获取识别结果
-	return p.GetFinalResult()
+	// 等待结果,无法立即返回正确的结果，通过回调函数返回
+	return p.result, nil
 }
 
 // generateHeader 生成协议头
@@ -408,7 +405,6 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 
 		conn, _, err := dialer.DialContext(ctx, p.wsURL, headers)
 		if err != nil {
-			fmt.Println("WebSocket连接失败: ", err)
 			return fmt.Errorf("WebSocket连接失败: %v", err)
 		}
 		p.conn = conn
@@ -462,6 +458,50 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 		}
 
 		p.isStreaming = true
+		// 开启一个协程来处理响应，读取最后的结果，读取完成后关闭协程
+		go func() {
+			for {
+				_, response, err := p.conn.ReadMessage()
+				if err != nil {
+					p.err = fmt.Errorf("读取响应失败: %v", err)
+					return
+				}
+
+				result, err := p.parseResponse(response)
+				if err != nil {
+					p.err = fmt.Errorf("解析响应失败: %v", err)
+					return
+				}
+
+				var respPayload responsePayload
+
+				payloadMsgData, err := json.Marshal(result["payload_msg"])
+				if err != nil {
+					p.err = fmt.Errorf("重新序列化响应payload_msg失败: %v", err)
+					return 
+				}
+
+				if err := json.Unmarshal(payloadMsgData, &respPayload); err != nil {
+					p.err = fmt.Errorf("解析最终响应payload失败: %v. Raw: %s", err, string(payloadMsgData))
+					return 
+				}
+
+				if respPayload.Code == 20000000 || respPayload.Code == 0 {
+					// 直接使用 respPayload.Result.Text
+					if respPayload.Result.Text == "" {
+						//fmt.Println("识别结果为空")
+					} else {
+						//fmt.Printf("识别结果: %s ,code: %d\n", respPayload.Result.Text, respPayload.Code)
+						p.result = respPayload.Result.Text
+						if p.BaseProvider.OnAsrResult != nil {
+							p.BaseProvider.OnAsrResult(respPayload.Result.Text)
+						}
+						return
+					}
+				} 
+			}
+		}()
+
 	}
 
 	// 将音频数据添加到缓冲区
@@ -527,79 +567,10 @@ func (p *Provider) sendCurrentBuffer(isLast bool) error {
 	return nil
 }
 
-// GetFinalResult 获取识别结果
-func (p *Provider) GetFinalResult() (string, error) {
-	if !p.isStreaming || p.conn == nil {
-		return "", fmt.Errorf("未初始化流式识别")
-	}
-
-	// 使用SetReadDeadline来防止永久阻塞
-	if err := p.conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
-		p.Reset() // 连接出现问题，直接重置
-		return "", fmt.Errorf("设置读取超时失败: %v", err)
-	}
-
-	// 读取最终响应
-	_, response, err := p.conn.ReadMessage()
-	if err != nil {
-		// 连接失败，立即重置
-		p.Reset() // 重置连接状态
-		return "", fmt.Errorf("读取最终响应失败: %v", err)
-	}
-
-	// 成功读取后重置超时
-	if err := p.conn.SetReadDeadline(time.Time{}); err != nil {
-		if p.logger != nil {
-			p.logger.Warn(fmt.Sprintf("重置读取超时失败: %v", err))
-		}
-	}
-
-	finalResult, err := p.parseResponse(response)
-	if err != nil {
-		return "", fmt.Errorf("解析最终响应失败: %v", err)
-	}
-
-	// 提取识别结果
-	// Instead of parsing map[string]interface{}, unmarshal directly into responsePayload struct
-	var respPayload responsePayload
-
-	payloadMsgData, err := json.Marshal(finalResult["payload_msg"])
-	if err != nil {
-		return "", fmt.Errorf("重新序列化响应payload_msg失败: %v", err)
-	}
-
-	if err := json.Unmarshal(payloadMsgData, &respPayload); err != nil {
-		// Fallback for cases where payload_msg might be a simple string (e.g. error message not in JSON)
-		if errMsgStr, ok := finalResult["payload_msg"].(string); ok {
-			// Try to get code from the top level if available
-			if codeVal, codeOk := finalResult["code"].(uint32); codeOk {
-				return "", fmt.Errorf("ASR错误, code: %d, message: %s", codeVal, errMsgStr)
-			}
-			return "", fmt.Errorf("ASR错误: %s", errMsgStr)
-		}
-		return "", fmt.Errorf("解析最终响应payload失败: %v. Raw: %s", err, string(payloadMsgData))
-	}
-
-	if respPayload.Code == 20000000 || respPayload.Code == 0 {
-		// 直接使用 respPayload.Result.Text
-		if respPayload.Result.Text == "" {
-			return "", fmt.Errorf("ASR识别结果为空")
-		} else {
-			fmt.Printf("识别结果: %s ,code: %d\n", respPayload.Result.Text, respPayload.Code)
-			return respPayload.Result.Text, nil
-		}
-	} else {
-		errMsg := respPayload.Message
-		if errMsg == "" {
-			// If message is empty, try to get a string representation of the payload
-			errMsg = fmt.Sprintf("%v", finalResult["payload_msg"])
-		}
-		return "", fmt.Errorf("ASR错误, code: %d, message: %s", respPayload.Code, errMsg)
-	}
-}
-
 // Reset 重置ASR状态
 func (p *Provider) Reset() error {
+	p.isStreaming = false
+
 	if p.conn != nil {
 		// 先设置一个短超时时间，避免关闭时卡住
 		_ = p.conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
@@ -618,7 +589,6 @@ func (p *Provider) Reset() error {
 	}
 
 	p.reqID = ""
-	p.isStreaming = false
 	p.result = ""
 	p.err = nil
 

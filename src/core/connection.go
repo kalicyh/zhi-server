@@ -56,7 +56,6 @@ type ConnectionHandler struct {
 		haveVoiceLast time.Time
 		noVoiceLast   time.Time
 	}
-	asrTicker          *time.Ticker       // 用于定时检查ASR结果
 	asr_server_receive bool               // 是否接收ASR结果
 	opusDecoder        *utils.OpusDecoder // Opus解码器
 
@@ -112,8 +111,7 @@ func NewConnectionHandler(
 			text      string
 			textIndex int
 		}, 100),
-
-		asrTicker:            time.NewTicker(100 * time.Millisecond), // 每100ms检查一次ASR结果
+		
 		tts_last_text_index:  -1,
 		tts_first_text_index: -1,
 
@@ -122,6 +120,7 @@ func NewConnectionHandler(
 		serverAudioChannels:      1,
 		serverAudioFrameDuration: 60,
 	}
+	handler.providers.asr.SetOnResult(handler.onAsrResult)
 
 	// 初始化对话管理器
 	handler.dialogueManager = chat.NewDialogueManager(handler.logger, nil)
@@ -144,7 +143,6 @@ func (h *ConnectionHandler) Handle(conn Conn) {
 	// 启动消息处理协程
 	go h.processClientAudioMessagesCoroutine() // 添加客户端音频消息处理协程
 	go h.processClientTextMessagesCoroutine()  // 添加客户端文本消息处理协程
-	go h.monitorASRResultsCoroutine()          // 添加监控ASR结果的协程
 	go h.processTTSQueueCoroutine()            // 添加TTS队列处理协程
 	go h.sendAudioMessageCoroutine()           // 添加音频消息发送协程
 
@@ -236,70 +234,11 @@ func (h *ConnectionHandler) processClientAudioMessagesCoroutine() {
 	}
 }
 
-// 新增监控ASR结果的方法
-func (h *ConnectionHandler) monitorASRResultsCoroutine() {
-	// 添加重连逻辑的变量
-	const maxRetries = 3
-	retryCount := 0
-	backoffTime := 1 * time.Second
-
-	for {
-		select {
-		case <-h.stopChan:
-			return
-		case <-h.asrTicker.C:
-			// 定期获取ASR结果
-			text, err := h.providers.asr.GetFinalResult()
-			if err != nil {
-				errMsg := err.Error()
-
-				// 这些错误可以忽略，继续下一次循环
-				if errMsg == "未初始化流式识别" || errMsg == "ASR识别结果为空" {
-					continue
-				}
-
-				// 对于网络或连接错误，记录并重置
-				if strings.Contains(errMsg, "读取最终响应失败") ||
-					strings.Contains(errMsg, "websocket") {
-
-					retryCount++
-					if retryCount <= maxRetries {
-						h.logger.Warn(fmt.Sprintf("ASR连接出错 (尝试 %d/%d): %v，将在 %v 后重试",
-							retryCount, maxRetries, err, backoffTime))
-						time.Sleep(backoffTime)
-						backoffTime *= 2 // 指数退避
-
-						// 对ASR进行重置
-						h.providers.asr.Reset()
-						continue
-					}
-
-					h.logger.Error(fmt.Sprintf("ASR连接持续失败，达到最大重试次数 (%d): %v", maxRetries, err))
-					h.providers.asr.Reset()
-					retryCount = 0
-					backoffTime = 1 * time.Second
-					continue
-				}
-
-				h.logger.Error(fmt.Sprintf("获取ASR结果失败: %v", err))
-				h.providers.asr.Reset()
-				continue
-			}
-
-			// 成功获取结果后，重置重试计数器
-			retryCount = 0
-			backoffTime = 1 * time.Second
-
-			if text != "" {
-				// 将文本放入队列进行处理
-				h.logger.Info("ASR识别结果: " + text)
-				h.asr_server_receive = false
-				h.handleChatMessage(context.Background(), text)
-			} else {
-				h.logger.Info("ASR识别结果为空")
-			}
-		}
-	}
+func (h *ConnectionHandler) onAsrResult(result string) {
+	// 处理ASR结果
+	h.logger.Info("ASR识别结果: " + result)
+	h.asr_server_receive = false
+	h.handleChatMessage(context.Background(), result)
 }
 
 // processClientTextMessage 处理文本数据
@@ -804,7 +743,6 @@ func (h *ConnectionHandler) closeOpusDecoder() {
 
 // Close 清理资源
 func (h *ConnectionHandler) Close() {
-	h.asrTicker.Stop()
 	close(h.stopChan)
 	close(h.clientAudioQueue)
 	close(h.clientTextQueue)

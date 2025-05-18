@@ -38,7 +38,6 @@ ASR:
     type: doubao
     appid: "你的appid"
     access_token: 你的access_token
-    cluster: 你的cluster
     output_dir: tmp/
 
 # TTS配置

@@ -18,8 +18,9 @@ type ASRProvider interface {
 	Transcribe(ctx context.Context, audioData []byte) (string, error)
 	// 添加音频数据到缓冲区
 	AddAudio(data []byte) error
-	// 获取最终识别结果
-	GetFinalResult() (string, error)
+
+	SetOnResult(fn func(result string)) error
+
 	// 复位ASR状态
 	Reset() error
 }
