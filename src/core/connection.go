@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"xiaozhi-server-go/src/configs"
@@ -51,24 +50,18 @@ type ConnectionHandler struct {
 	closeAfterChat   bool
 
 	// 语音处理相关
-	clientHaveVoice bool
-	clientVoiceStop bool
-	voiceTimestamps struct {
-		haveVoiceLast time.Time
-		noVoiceLast   time.Time
-	}
+	clientVoiceStop bool // true客户端语音停止, 不再上传语音数据
+	serverVoiceStop bool // true服务端语音停止, 不再下发语音数据
 
 	opusDecoder *utils.OpusDecoder // Opus解码器
 
 	// 对话相关
 	dialogueManager      *chat.DialogueManager
-	prompt               string
 	tts_first_text_index int
 	tts_last_text_index  int
 	client_asr_text      string // 客户端ASR文本
 
 	// 并发控制
-	mu               sync.Mutex
 	stopChan         chan struct{}
 	clientAudioQueue chan []byte
 	clientTextQueue  chan string
@@ -244,7 +237,7 @@ func (h *ConnectionHandler) OnAsrResult(result string) bool {
 		h.logger.Info(fmt.Sprintf("[%s] ASR识别结果: %s", h.clientListenMode, result))
 		h.handleChatMessage(context.Background(), result)
 		return true
-	} else {
+	} else if h.clientListenMode == "manual" {
 		h.client_asr_text += result
 		if result != "" {
 			h.logger.Info(fmt.Sprintf("[%s] ASR识别结果: %s", h.clientListenMode, h.client_asr_text))
@@ -254,7 +247,16 @@ func (h *ConnectionHandler) OnAsrResult(result string) bool {
 			return true
 		}
 		return false
+	} else if h.clientListenMode == "realtime" {
+		if result == "" {
+			return false
+		}
+		h.stopServerSpeak()
+		h.logger.Info(fmt.Sprintf("[%s] ASR识别结果: %s", h.clientListenMode, result))
+		h.handleChatMessage(context.Background(), result)
+		return false
 	}
+	return false
 }
 
 // processClientTextMessage 处理文本数据
@@ -346,6 +348,7 @@ func (h *ConnectionHandler) handleHelloMessage(msgMap map[string]interface{}) er
 // handleAbortMessage 处理中止消息
 func (h *ConnectionHandler) handleAbortMessage() error {
 	h.clientAbort = true
+	h.stopServerSpeak()
 	return nil
 }
 
@@ -366,15 +369,13 @@ func (h *ConnectionHandler) handleListenMessage(msgMap map[string]interface{}) e
 
 	switch state {
 	case "start":
-		h.clientHaveVoice = true
 		h.clientVoiceStop = false
 		h.client_asr_text = ""
 	case "stop":
-		h.clientHaveVoice = true
 		h.clientVoiceStop = true
 		h.logger.Info("客户端停止语音识别")
 	case "detect":
-		h.clientHaveVoice = false
+
 		// 处理text参数
 		if text, ok := msgMap["text"].(string); ok {
 			// TODO: 实现去除标点和长度的函数
@@ -469,6 +470,8 @@ func (h *ConnectionHandler) handleChatMessage(ctx context.Context, text string) 
 	processedChars := 0
 	textIndex := 0
 
+	h.serverVoiceStop = false
+
 	for content := range responses {
 		responseMessage = append(responseMessage, content)
 		if h.clientAbort {
@@ -553,6 +556,11 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 		return
 	}
 
+	if h.serverVoiceStop { // 服务端语音停止
+		h.logger.Info(fmt.Sprintf("sendAudioMessage 服务端语音停止, 不再发送音频数据：%s", text))
+		return
+	}
+
 	defer func() {
 		if textIndex == h.tts_last_text_index {
 			h.sendTTSMessage("stop", "", textIndex)
@@ -607,6 +615,35 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 	}
 }
 
+// 服务端打断说话
+func (h *ConnectionHandler) stopServerSpeak() {
+	h.logger.Info("stopServerSpeak 服务端停止说话")
+	h.serverVoiceStop = true
+	// 终止tts任务，不再继续将文本加入到tts队列，清空ttsQueue队列
+	for {
+		select {
+		case <-h.ttsQueue:
+			h.logger.Debug("丢弃一个TTS任务")
+		default:
+			// 队列已清空，退出循环
+			goto clearAudioQueue
+		}
+	}
+
+clearAudioQueue:
+	// 终止audioMessagesQueue发送，清空队列里的音频数据
+	for {
+		select {
+		case <-h.audioMessagesQueue:
+			h.logger.Debug("丢弃一个音频消息")
+		default:
+			// 队列已清空，退出循环
+			return
+		}
+	}
+
+}
+
 // processTTSTask 处理单个TTS任务
 func (h *ConnectionHandler) processTTSTask(text string, textIndex int) {
 	if text == "" {
@@ -621,7 +658,10 @@ func (h *ConnectionHandler) processTTSTask(text string, textIndex int) {
 	} else {
 		h.logger.Info(fmt.Sprintf("TTS转换成功: text(%s), index(%d) %s", text, textIndex, filepath))
 	}
-
+	if h.serverVoiceStop { // 服务端语音停止
+		h.logger.Info(fmt.Sprintf("processTTSTask 服务端语音停止, 不再发送音频数据：%s", text))
+		return
+	}
 	h.audioMessagesQueue <- struct {
 		filepath  string
 		text      string
@@ -632,6 +672,10 @@ func (h *ConnectionHandler) processTTSTask(text string, textIndex int) {
 // speakAndPlay 合成并播放语音
 func (h *ConnectionHandler) speakAndPlay(text string, textIndex int) error {
 	if text == "" {
+		return nil
+	}
+	if h.serverVoiceStop { // 服务端语音停止
+		h.logger.Info(fmt.Sprintf("speakAndPlay 服务端语音停止, 不再发送音频数据：%s", text))
 		return nil
 	}
 	// 将任务加入队列，不阻塞当前流程
@@ -686,7 +730,9 @@ func (h *ConnectionHandler) clearSpeakStatus() {
 	h.logger.Info("清除服务端讲话状态 ")
 	h.tts_last_text_index = -1
 	h.tts_first_text_index = -1
-	h.providers.asr.Reset() // 重置ASR状态
+	if h.clientListenMode != "realtime" {
+		h.providers.asr.Reset() // 重置ASR状态
+	}
 }
 
 func (h *ConnectionHandler) recode_first_last_text(text string, text_index int) {

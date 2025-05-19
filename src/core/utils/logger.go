@@ -65,7 +65,7 @@ func (l *Logger) Close() error {
 
 // log 通用日志记录函数
 func (l *Logger) log(level LogLevel, tag string, msg string, fields ...interface{}) {
-	nowString := time.Now().Format("[2006-01-02 15:04:05.000]")
+	nowString := time.Now().Format("2006-01-02 15:04:05.000")
 	entry := LogEntry{
 		Time:    nowString,
 		Level:   level,
@@ -85,7 +85,7 @@ func (l *Logger) log(level LogLevel, tag string, msg string, fields ...interface
 
 	// 写入文件
 	if _, err := l.logFile.Write(append(data, '\n')); err != nil {
-		fmt.Fprintf(os.Stderr, "写入日志失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "写入日志失败: %s %v\n", msg, err)
 	}
 
 	// 同时输出到控制台
