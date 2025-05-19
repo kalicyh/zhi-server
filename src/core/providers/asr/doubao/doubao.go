@@ -384,8 +384,6 @@ func (p *Provider) AddAudio(data []byte) error {
 
 // AddAudioWithContext 带上下文的音频数据添加
 func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
-	//fmt.Println("AddAudioWithContext called, data length: ", len(data))
-
 	// 使用锁检查状态
 	p.connMutex.Lock()
 	isStreaming := p.isStreaming
@@ -539,7 +537,6 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 				}
 
 				if respPayload.Code == 20000000 || respPayload.Code == 0 {
-					//fmt.Printf("识别结果: %s ,code: %d\n", respPayload.Result.Text, respPayload.Code)
 					p.connMutex.Lock()
 					p.result = respPayload.Result.Text
 					p.connMutex.Unlock()
@@ -552,35 +549,27 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 				}
 			}
 		}()
-
 	}
 
-	// 将音频数据添加到缓冲区
-	buffer := p.GetAudioBuffer()
-	buffer.Write(data)
+	// 直接处理传入的音频数据，不使用缓冲区
 	now := time.Now()
 	p.BaseProvider.SetLastChunkTime(now)
 
+	// 检查是否有实际数据需要发送
+	if len(data) > 0 && p.isStreaming {
+		// 直接发送音频数据
+		if err := p.sendAudioData(data, false); err != nil {
+			return fmt.Errorf("发送音频数据失败: %v", err)
+		}
+	}
+
 	// 检查是否超时
 	if p.isStreaming && now.Sub(p.GetLastChunkTime()) > idleTimeout {
-		// 获取最终结果并重置
 		fmt.Println("超时, 发送最后的音频数据")
-		if err := p.sendCurrentBuffer(true); err != nil {
+		if err := p.sendAudioData(data, true); err != nil {
 			return fmt.Errorf("发送最后的音频数据失败: %v", err)
 		}
 		p.Reset()
-		return nil
-	}
-
-	// 如果积累了足够的数据，进行一次发送
-	blockSize := 16000 * 2 * p.chunkDuration / 1000 // 16000Hz, 16bit, mono
-	//fmt.Println("当前数据长度: ", buffer.Len(), "块大小: ", blockSize)
-	if buffer.Len() >= blockSize {
-		//fmt.Println("发送当前数据, 长度: ", buffer.Len(), blockSize)
-		// 发送当前数据
-		if err := p.sendCurrentBuffer(false); err != nil {
-			return err
-		}
 	}
 
 	return nil
@@ -602,12 +591,16 @@ func (p *Provider) closeConnection() {
 	}
 }
 
-// sendCurrentBuffer 发送当前缓冲区的数据
-func (p *Provider) sendCurrentBuffer(isLast bool) error {
-	buffer := p.GetAudioBuffer()
+// sendAudioData 直接发送音频数据，替代之前的sendCurrentBuffer
+func (p *Provider) sendAudioData(data []byte, isLast bool) error {
+	// 如果没有数据且不是最后一帧，不发送
+	if len(data) == 0 && !isLast {
+		return nil
+	}
+
 	var compressBuffer bytes.Buffer
 	gzipWriter := gzip.NewWriter(&compressBuffer)
-	if _, err := gzipWriter.Write(buffer.Bytes()); err != nil {
+	if _, err := gzipWriter.Write(data); err != nil {
 		return fmt.Errorf("压缩音频数据失败: %v", err)
 	}
 	gzipWriter.Close()
@@ -629,8 +622,6 @@ func (p *Provider) sendCurrentBuffer(isLast bool) error {
 		return fmt.Errorf("发送音频数据失败: %v", err)
 	}
 
-	// 清空缓冲区
-	buffer.Reset()
 	return nil
 }
 
@@ -647,7 +638,7 @@ func (p *Provider) Reset() error {
 	p.result = ""
 	p.err = nil
 
-	// 重置音频缓冲区
+	// 重置音频处理
 	p.InitAudioProcessing()
 
 	if p.logger != nil {
@@ -677,6 +668,24 @@ func (p *Provider) Cleanup() error {
 	if p.logger != nil {
 		p.logger.Info("ASR资源已清理")
 	}
+	return nil
+}
+
+// Finalize 实现ASRProvider接口的Finalize方法，完成最终处理
+func (p *Provider) Finalize() error {
+	p.connMutex.Lock()
+	defer p.connMutex.Unlock()
+
+	// 如果不是流式识别状态，直接返回
+	if !p.isStreaming || p.conn == nil {
+		return nil
+	}
+
+	// 发送一个空音频帧但标记为最后一帧，触发最终识别结果
+	if err := p.sendAudioData([]byte{}, true); err != nil {
+		return fmt.Errorf("发送最终帧失败: %v", err)
+	}
+
 	return nil
 }
 

@@ -378,13 +378,7 @@ func (h *ConnectionHandler) handleListenMessage(msgMap map[string]interface{}) e
 		h.clientVoiceStop = true
 		h.logger.Info("客户端停止语音识别")
 		if h.clientListenMode == "manual" {
-            h.logger.Info("发送空音频帧以确保获取最终ASR结果")
-            
-            // 添加一个非常短的静音帧（全零）
-            silentFrame := make([]byte, 6400) // 一个较小的PCM帧大小
-            
-            // 将静音帧放入音频处理队列
-            h.clientAudioQueue <- silentFrame
+			h.providers.asr.Finalize()
 		}
 	case "detect":
 

@@ -26,6 +26,8 @@ type ASRProvider interface {
 	SetListener(listener AsrEventListener)
 	// 复位ASR状态
 	Reset() error
+	// 完成最终处理，触发最终回调
+	Finalize() error
 }
 
 // TTSProvider 语音合成提供者接口
