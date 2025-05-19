@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"sync/atomic"
 
 	"xiaozhi-server-go/src/configs"
 	"xiaozhi-server-go/src/core/chat"
@@ -51,7 +52,7 @@ type ConnectionHandler struct {
 
 	// 语音处理相关
 	clientVoiceStop bool // true客户端语音停止, 不再上传语音数据
-	serverVoiceStop bool // true服务端语音停止, 不再下发语音数据
+	serverVoiceStop int32 // 1表示true服务端语音停止, 不再下发语音数据
 
 	opusDecoder *utils.OpusDecoder // Opus解码器
 
@@ -229,7 +230,9 @@ func (h *ConnectionHandler) processClientAudioMessagesCoroutine() {
 }
 
 // OnAsrResult 实现 AsrEventListener 接口
+// 返回true则停止语音识别，返回false会继续语音识别
 func (h *ConnectionHandler) OnAsrResult(result string) bool {
+	//h.logger.Info(fmt.Sprintf("[%s] ASR识别结果: %s", h.clientListenMode, result))
 	if h.clientListenMode == "auto" {
 		if result == "" {
 			return false
@@ -374,6 +377,15 @@ func (h *ConnectionHandler) handleListenMessage(msgMap map[string]interface{}) e
 	case "stop":
 		h.clientVoiceStop = true
 		h.logger.Info("客户端停止语音识别")
+		if h.clientListenMode == "manual" {
+            h.logger.Info("发送空音频帧以确保获取最终ASR结果")
+            
+            // 添加一个非常短的静音帧（全零）
+            silentFrame := make([]byte, 6400) // 一个较小的PCM帧大小
+            
+            // 将静音帧放入音频处理队列
+            h.clientAudioQueue <- silentFrame
+		}
 	case "detect":
 
 		// 处理text参数
@@ -421,24 +433,29 @@ func (h *ConnectionHandler) handleChatMessage(ctx context.Context, text string) 
 	// 判断是否需要验证
 	if h.isNeedAuth() {
 		if err := h.checkAndBroadcastAuthCode(); err != nil {
+			h.logger.Error(fmt.Sprintf("检查认证码失败: %v", err))
 			return err
 		}
+		h.logger.Info("设备未认证，等待管理员认证")
 		return nil
 	}
 
 	// 立即发送 stt 消息
 	err := h.sendSTTMessage(text)
 	if err != nil {
+		h.logger.Error(fmt.Sprintf("发送STT消息失败: %v", err))
 		return fmt.Errorf("发送STT消息失败: %v", err)
 	}
 
 	// 发送tts start状态
 	if err := h.sendTTSMessage("start", "", 0); err != nil {
+		h.logger.Error(fmt.Sprintf("发送TTS开始状态失败: %v", err))
 		return fmt.Errorf("发送TTS开始状态失败: %v", err)
 	}
 
 	// 发送思考状态的情绪
 	if err := h.sendEmotionMessage("thinking"); err != nil {
+		h.logger.Error(fmt.Sprintf("发送思考状态情绪消息失败: %v", err))
 		return fmt.Errorf("发送情绪消息失败: %v", err)
 	}
 
@@ -470,7 +487,7 @@ func (h *ConnectionHandler) handleChatMessage(ctx context.Context, text string) 
 	processedChars := 0
 	textIndex := 0
 
-	h.serverVoiceStop = false
+	atomic.StoreInt32(&h.serverVoiceStop, 0)
 
 	for content := range responses {
 		responseMessage = append(responseMessage, content)
@@ -556,7 +573,7 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 		return
 	}
 
-	if h.serverVoiceStop { // 服务端语音停止
+	if atomic.LoadInt32(&h.serverVoiceStop) == 1 { // 服务端语音停止
 		h.logger.Info(fmt.Sprintf("sendAudioMessage 服务端语音停止, 不再发送音频数据：%s", text))
 		return
 	}
@@ -588,7 +605,7 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 		}
 	}
 
-	fmt.Println("音频时长:", duration)
+	//fmt.Println("音频时长:", duration)
 
 	// 发送TTS状态开始通知
 	if err := h.sendTTSMessage("sentence_start", text, textIndex); err != nil {
@@ -603,11 +620,11 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 			return
 		}
 	}
-	h.logger.Info(fmt.Sprintf("TTS发送(%s): \"%s\" (索引:%d)", h.serverAudioFormat, text, textIndex))
+	h.logger.Info(fmt.Sprintf("TTS发送(%s): \"%s\" (索引:%d，时长:%f)", h.serverAudioFormat, text, textIndex, duration))
 	now := time.Now()
 	time.Sleep(time.Duration(duration*1000) * time.Millisecond)
 	spent := time.Since(now)
-	h.logger.Info(fmt.Sprintf("%s音频数据发送完成, 休眠: %v", h.serverAudioFormat, spent))
+	h.logger.Info(fmt.Sprintf("%s音频数据发送完成, 已休眠: %v", h.serverAudioFormat, spent))
 	// 发送TTS状态结束通知
 	if err := h.sendTTSMessage("sentence_end", text, textIndex); err != nil {
 		h.logger.Error(fmt.Sprintf("发送TTS结束状态失败: %v", err))
@@ -618,12 +635,12 @@ func (h *ConnectionHandler) sendAudioMessage(filepath string, text string, textI
 // 服务端打断说话
 func (h *ConnectionHandler) stopServerSpeak() {
 	h.logger.Info("stopServerSpeak 服务端停止说话")
-	h.serverVoiceStop = true
+	atomic.StoreInt32(&h.serverVoiceStop, 1)
 	// 终止tts任务，不再继续将文本加入到tts队列，清空ttsQueue队列
 	for {
 		select {
-		case <-h.ttsQueue:
-			h.logger.Debug("丢弃一个TTS任务")
+		case task := <-h.ttsQueue:
+			h.logger.Info(fmt.Sprintf("丢弃一个TTS任务: %s", task.text))
 		default:
 			// 队列已清空，退出循环
 			goto clearAudioQueue
@@ -634,14 +651,13 @@ clearAudioQueue:
 	// 终止audioMessagesQueue发送，清空队列里的音频数据
 	for {
 		select {
-		case <-h.audioMessagesQueue:
-			h.logger.Debug("丢弃一个音频消息")
+		case task := <-h.audioMessagesQueue:
+			h.logger.Info(fmt.Sprintf("丢弃一个音频任务: %s", task.text))
 		default:
 			// 队列已清空，退出循环
 			return
 		}
 	}
-
 }
 
 // processTTSTask 处理单个TTS任务
@@ -658,7 +674,7 @@ func (h *ConnectionHandler) processTTSTask(text string, textIndex int) {
 	} else {
 		h.logger.Info(fmt.Sprintf("TTS转换成功: text(%s), index(%d) %s", text, textIndex, filepath))
 	}
-	if h.serverVoiceStop { // 服务端语音停止
+	if atomic.LoadInt32(&h.serverVoiceStop) == 1 { // 服务端语音停止
 		h.logger.Info(fmt.Sprintf("processTTSTask 服务端语音停止, 不再发送音频数据：%s", text))
 		return
 	}
@@ -674,7 +690,7 @@ func (h *ConnectionHandler) speakAndPlay(text string, textIndex int) error {
 	if text == "" {
 		return nil
 	}
-	if h.serverVoiceStop { // 服务端语音停止
+	if atomic.LoadInt32(&h.serverVoiceStop) == 1 { // 服务端语音停止
 		h.logger.Info(fmt.Sprintf("speakAndPlay 服务端语音停止, 不再发送音频数据：%s", text))
 		return nil
 	}
@@ -737,7 +753,7 @@ func (h *ConnectionHandler) clearSpeakStatus() {
 
 func (h *ConnectionHandler) recode_first_last_text(text string, text_index int) {
 	if h.tts_first_text_index == -1 {
-		h.logger.Info("大模型说出第一句话", text)
+		h.logger.Info(fmt.Sprintf("大模型说出第一句话:%s", text))
 		h.tts_first_text_index = text_index
 	}
 

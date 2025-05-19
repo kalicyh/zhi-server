@@ -71,7 +71,7 @@ func (p *Provider) ToTTS(text string) (string, error) {
 	if _, err := os.Stat(tempFile); os.IsNotExist(err) {
 		return "", fmt.Errorf("edge-tts-go 未能创建音频文件: %s", tempFile)
 	}
-	fmt.Printf("音频文件已生成: %s\n", tempFile)
+	//fmt.Printf("音频文件已生成: %s\n", tempFile)
 
 	// Return the path to the generated audio file
 	return tempFile, nil
