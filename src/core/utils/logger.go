@@ -65,8 +65,9 @@ func (l *Logger) Close() error {
 
 // log 通用日志记录函数
 func (l *Logger) log(level LogLevel, tag string, msg string, fields ...interface{}) {
+	nowString := time.Now().Format("[2006-01-02 15:04:05.000]")
 	entry := LogEntry{
-		Time:    time.Now().Format(time.RFC3339),
+		Time:    nowString,
 		Level:   level,
 		Tag:     tag,
 		Message: msg,
@@ -88,7 +89,7 @@ func (l *Logger) log(level LogLevel, tag string, msg string, fields ...interface
 	}
 
 	// 同时输出到控制台
-	fmt.Printf("[%s] %s\n", level, msg)
+	fmt.Printf("[%s] [%s] %s\n", nowString, level, msg)
 }
 
 // Debug 记录调试级别日志

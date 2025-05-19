@@ -11,6 +11,10 @@ type Provider interface {
 	Cleanup() error
 }
 
+type AsrEventListener interface {
+	OnAsrResult(result string) bool
+}
+
 // ASRProvider 语音识别提供者接口
 type ASRProvider interface {
 	Provider
@@ -19,8 +23,7 @@ type ASRProvider interface {
 	// 添加音频数据到缓冲区
 	AddAudio(data []byte) error
 
-	SetOnResult(fn func(result string)) error
-
+	SetListener(listener AsrEventListener)
 	// 复位ASR状态
 	Reset() error
 }

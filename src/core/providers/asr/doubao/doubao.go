@@ -182,11 +182,6 @@ func NewProvider(config *asr.Config, deleteFile bool) (*Provider, error) {
 	return provider, nil
 }
 
-func (p *Provider) SetOnResult(fn func(result string)) error {
-	p.BaseProvider.OnAsrResult = fn
-	return nil
-}
-
 // 读取根目录下的mp3文件，测试Transcribe方法
 func (p *Provider) TestTranscribe() (string, error) {
 	fmt.Println("TestTranscribe called")
@@ -544,19 +539,15 @@ func (p *Provider) AddAudioWithContext(ctx context.Context, data []byte) error {
 				}
 
 				if respPayload.Code == 20000000 || respPayload.Code == 0 {
-					// 直接使用 respPayload.Result.Text
-					if respPayload.Result.Text == "" {
-						//fmt.Println("识别结果为空")
-					} else {
-						//fmt.Printf("识别结果: %s ,code: %d\n", respPayload.Result.Text, respPayload.Code)
-						p.connMutex.Lock()
-						p.result = respPayload.Result.Text
-						p.connMutex.Unlock()
+					//fmt.Printf("识别结果: %s ,code: %d\n", respPayload.Result.Text, respPayload.Code)
+					p.connMutex.Lock()
+					p.result = respPayload.Result.Text
+					p.connMutex.Unlock()
 
-						if p.BaseProvider.OnAsrResult != nil {
-							p.BaseProvider.OnAsrResult(respPayload.Result.Text)
+					if listener := p.BaseProvider.GetListener(); listener != nil {
+						if finished := listener.OnAsrResult(respPayload.Result.Text); finished {
+							return
 						}
-						return
 					}
 				}
 			}

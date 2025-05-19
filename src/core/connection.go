@@ -16,6 +16,8 @@ import (
 
 // ConnectionHandler 连接处理器结构
 type ConnectionHandler struct {
+	// 确保实现 AsrEventListener 接口
+	_         providers.AsrEventListener
 	config    *configs.Config
 	logger    *utils.Logger
 	conn      Conn
@@ -49,21 +51,21 @@ type ConnectionHandler struct {
 	closeAfterChat   bool
 
 	// 语音处理相关
-	clientAudioBuffer []byte
-	clientHaveVoice   bool
-	clientVoiceStop   bool
-	voiceTimestamps   struct {
+	clientHaveVoice bool
+	clientVoiceStop bool
+	voiceTimestamps struct {
 		haveVoiceLast time.Time
 		noVoiceLast   time.Time
 	}
-	asr_server_receive bool               // 是否接收ASR结果
-	opusDecoder        *utils.OpusDecoder // Opus解码器
+
+	opusDecoder *utils.OpusDecoder // Opus解码器
 
 	// 对话相关
 	dialogueManager      *chat.DialogueManager
 	prompt               string
 	tts_first_text_index int
 	tts_last_text_index  int
+	client_asr_text      string // 客户端ASR文本
 
 	// 并发控制
 	mu               sync.Mutex
@@ -111,7 +113,7 @@ func NewConnectionHandler(
 			text      string
 			textIndex int
 		}, 100),
-		
+
 		tts_last_text_index:  -1,
 		tts_first_text_index: -1,
 
@@ -120,7 +122,6 @@ func NewConnectionHandler(
 		serverAudioChannels:      1,
 		serverAudioFrameDuration: 60,
 	}
-	handler.providers.asr.SetOnResult(handler.onAsrResult)
 
 	// 初始化对话管理器
 	handler.dialogueManager = chat.NewDialogueManager(handler.logger, nil)
@@ -234,11 +235,26 @@ func (h *ConnectionHandler) processClientAudioMessagesCoroutine() {
 	}
 }
 
-func (h *ConnectionHandler) onAsrResult(result string) {
-	// 处理ASR结果
-	h.logger.Info("ASR识别结果: " + result)
-	h.asr_server_receive = false
-	h.handleChatMessage(context.Background(), result)
+// OnAsrResult 实现 AsrEventListener 接口
+func (h *ConnectionHandler) OnAsrResult(result string) bool {
+	if h.clientListenMode == "auto" {
+		if result == "" {
+			return false
+		}
+		h.logger.Info(fmt.Sprintf("[%s] ASR识别结果: %s", h.clientListenMode, result))
+		h.handleChatMessage(context.Background(), result)
+		return true
+	} else {
+		h.client_asr_text += result
+		if result != "" {
+			h.logger.Info(fmt.Sprintf("[%s] ASR识别结果: %s", h.clientListenMode, h.client_asr_text))
+		}
+		if h.clientVoiceStop {
+			h.handleChatMessage(context.Background(), h.client_asr_text)
+			return true
+		}
+		return false
+	}
 }
 
 // processClientTextMessage 处理文本数据
@@ -339,6 +355,7 @@ func (h *ConnectionHandler) handleListenMessage(msgMap map[string]interface{}) e
 	if mode, ok := msgMap["mode"].(string); ok {
 		h.clientListenMode = mode
 		h.logger.Info(fmt.Sprintf("客户端拾音模式：%s", h.clientListenMode))
+		h.providers.asr.SetListener(h)
 	}
 
 	// 处理state参数
@@ -351,15 +368,13 @@ func (h *ConnectionHandler) handleListenMessage(msgMap map[string]interface{}) e
 	case "start":
 		h.clientHaveVoice = true
 		h.clientVoiceStop = false
+		h.client_asr_text = ""
 	case "stop":
 		h.clientHaveVoice = true
 		h.clientVoiceStop = true
-		if len(h.clientAudioBuffer) > 0 {
-			h.clientAudioQueue <- []byte{}
-		}
+		h.logger.Info("客户端停止语音识别")
 	case "detect":
 		h.clientHaveVoice = false
-		h.clientAudioBuffer = nil
 		// 处理text参数
 		if text, ok := msgMap["text"].(string); ok {
 			// TODO: 实现去除标点和长度的函数
@@ -669,7 +684,6 @@ func (h *ConnectionHandler) sendSTTMessage(text string) error {
 
 func (h *ConnectionHandler) clearSpeakStatus() {
 	h.logger.Info("清除服务端讲话状态 ")
-	h.asr_server_receive = true
 	h.tts_last_text_index = -1
 	h.tts_first_text_index = -1
 	h.providers.asr.Reset() // 重置ASR状态

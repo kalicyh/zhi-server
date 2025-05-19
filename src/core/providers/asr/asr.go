@@ -34,7 +34,17 @@ type BaseProvider struct {
 	silenceThreshold float64 // 能量阈值
 	silenceDuration  int     // 静音持续时间(ms)
 
-	OnAsrResult func(result string)
+	listener providers.AsrEventListener
+}
+
+// SetListener 设置事件监听器
+func (p *BaseProvider) SetListener(listener providers.AsrEventListener) {
+	p.listener = listener
+}
+
+// GetListener 获取事件监听器
+func (p *BaseProvider) GetListener() providers.AsrEventListener {
+	return p.listener
 }
 
 // Config 获取配置
@@ -67,7 +77,6 @@ func NewBaseProvider(config *Config, deleteFile bool) *BaseProvider {
 	return &BaseProvider{
 		config:     config,
 		deleteFile: deleteFile,
-		OnAsrResult: nil,
 	}
 }
 
@@ -153,4 +162,3 @@ func (p *BaseProvider) IsEndOfSpeech() bool {
 	}
 	return false
 }
-
