@@ -5,13 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 	"sync/atomic"
+	"time"
 
 	"xiaozhi-server-go/src/configs"
 	"xiaozhi-server-go/src/core/chat"
 	"xiaozhi-server-go/src/core/providers"
 	"xiaozhi-server-go/src/core/utils"
+	"xiaozhi-server-go/src/task"
 )
 
 // ConnectionHandler 连接处理器结构
@@ -21,6 +22,7 @@ type ConnectionHandler struct {
 	config    *configs.Config
 	logger    *utils.Logger
 	conn      Conn
+	taskMgr   *task.TaskManager
 	providers struct {
 		asr providers.ASRProvider
 		llm providers.LLMProvider
@@ -51,7 +53,7 @@ type ConnectionHandler struct {
 	closeAfterChat   bool
 
 	// 语音处理相关
-	clientVoiceStop bool // true客户端语音停止, 不再上传语音数据
+	clientVoiceStop bool  // true客户端语音停止, 不再上传语音数据
 	serverVoiceStop int32 // 1表示true服务端语音停止, 不再下发语音数据
 
 	opusDecoder *utils.OpusDecoder // Opus解码器
@@ -298,9 +300,32 @@ func (h *ConnectionHandler) processClientTextMessage(ctx context.Context, text s
 		return h.handleIotMessage(msgMap)
 	case "chat":
 		return h.handleChatMessage(ctx, text)
+	case "vision":
+		return h.handleVisionMessage(msgMap)
 	default:
 		return fmt.Errorf("未知的消息类型: %s", msgType)
 	}
+}
+
+func (h *ConnectionHandler) handleVisionMessage(msgMap map[string]interface{}) error {
+	// 处理视觉消息
+	cmd := msgMap["cmd"].(string)
+	if cmd == "gen_pic" {
+		text := msgMap["text"].(string)
+		params := map[string]interface{}{
+			"prompt":    text,
+			"size":      "1024x1024",
+			"quality":   "standard",
+			"api_key":   h.config.LLM["ChatGLMLLM"].APIKey,
+			"client_id": h.sessionID,
+		}
+		task, id := task.NewTask(task.TaskTypeImageGen, params, task.NewMessageCallback(h.conn, "vision", cmd))
+		h.taskMgr.SubmitTask(h.sessionID, task)
+		h.logger.Info(fmt.Sprintf("生成图片任务提交成功: %s, %s", text, id))
+	} else if cmd == "gen_video" {
+	} else if cmd == "read_img" {
+	}
+	return nil
 }
 
 // handleHelloMessage 处理欢迎消息
@@ -499,7 +524,7 @@ func (h *ConnectionHandler) handleChatMessage(ctx context.Context, text string) 
 		if segment, chars := splitAtLastPunctuation(currentText); chars > 0 {
 			textIndex++
 			h.recode_first_last_text(segment, textIndex)
-			h.speakAndPlay(segment, textIndex)
+			h.SpeakAndPlay(segment, textIndex)
 			processedChars += chars
 		}
 	}
@@ -509,7 +534,7 @@ func (h *ConnectionHandler) handleChatMessage(ctx context.Context, text string) 
 	if remainingText != "" {
 		textIndex++
 		h.recode_first_last_text(remainingText, textIndex)
-		h.speakAndPlay(remainingText, textIndex)
+		h.SpeakAndPlay(remainingText, textIndex)
 	}
 
 	// 分析回复并发送相应的情绪
@@ -536,7 +561,7 @@ func (h *ConnectionHandler) isNeedAuth() bool {
 func (h *ConnectionHandler) checkAndBroadcastAuthCode() error {
 	// 这里简化了认证逻辑，实际需要根据具体需求实现
 	text := "请联系管理员进行设备认证"
-	return h.speakAndPlay(text, 0)
+	return h.SpeakAndPlay(text, 0)
 }
 
 // processTTSQueueCoroutine 处理TTS队列
@@ -680,7 +705,7 @@ func (h *ConnectionHandler) processTTSTask(text string, textIndex int) {
 }
 
 // speakAndPlay 合成并播放语音
-func (h *ConnectionHandler) speakAndPlay(text string, textIndex int) error {
+func (h *ConnectionHandler) SpeakAndPlay(text string, textIndex int) error {
 	if text == "" {
 		return nil
 	}
