@@ -1,13 +1,23 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import App from './App';
+import { themeChange } from 'theme-change';
 
-const rootEl = document.getElementById('root');
-if (rootEl) {
-  const root = ReactDOM.createRoot(rootEl);
-  root.render(
-    <React.StrictMode>
+const Root = () => {
+  useEffect(() => {
+    themeChange(false); // 初始化 theme-change
+  }, []);
+
+  return (
+    <BrowserRouter>
       <App />
-    </React.StrictMode>,
+    </BrowserRouter>
   );
-}
+};
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <Root />
+  </React.StrictMode>
+);
