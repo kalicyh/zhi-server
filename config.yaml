@@ -30,7 +30,7 @@ use_private_config: false
 selected_module:
   ASR: DoubaoASR
   TTS: DoubaoTTS
-  LLM: ChatGLMLLM
+  LLM: OllamaLLM
 
 # ASR配置
 ASR:
