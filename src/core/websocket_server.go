@@ -12,6 +12,7 @@ import (
 	"xiaozhi-server-go/src/core/providers/llm"
 	"xiaozhi-server-go/src/core/providers/tts"
 	"xiaozhi-server-go/src/core/utils"
+	"xiaozhi-server-go/src/task"
 
 	"github.com/gorilla/websocket"
 )
@@ -22,6 +23,7 @@ type WebSocketServer struct {
 	server    *http.Server
 	upgrader  Upgrader
 	logger    *utils.Logger
+	taskMgr   *task.TaskManager
 	providers struct {
 		asr providers.ASRProvider
 		llm providers.LLMProvider
@@ -48,6 +50,17 @@ func NewWebSocketServer(config *configs.Config, logger *utils.Logger) (*WebSocke
 		config:   config,
 		logger:   logger,
 		upgrader: NewDefaultUpgrader(),
+		taskMgr: func() *task.TaskManager {
+			tm := task.NewTaskManager(task.ResourceConfig{
+				MaxWorkers:          12,
+				MaxTasksPerClient:   20,
+				MaxImageTasksPerDay: 50,
+				MaxVideoTasksPerDay: 20,
+				MaxScheduledTasks:   100,
+			})
+			tm.Start()
+			return tm
+		}(),
 	}
 
 	// 初始化处理模块实例
@@ -184,6 +197,9 @@ func (ws *WebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Reques
 		llm: ws.providers.llm,
 		tts: ws.providers.tts,
 	}, ws.logger)
+
+	// Initialize task manager for the handler
+	handler.taskMgr = ws.taskMgr
 	go handler.Handle(conn)
 }
 

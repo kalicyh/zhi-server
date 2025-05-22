@@ -80,7 +80,7 @@ type LLMConfig struct {
 
 // LoadConfig 从文件加载配置
 func LoadConfig() (*Config, string, error) {
-	path := "src/configs/.config.yaml"
+	path := ".config.yaml"
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		path = "config.yaml"
 	}
