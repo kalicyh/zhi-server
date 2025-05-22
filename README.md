@@ -49,7 +49,7 @@ git clone https://github.com/Eric0308/zhi-server.git
 ```
  go mod tidy
 
- go run .\src\main.go
+ go run ./src/main.go
 ```
 
 ## 编译
