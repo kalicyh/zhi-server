@@ -22,6 +22,15 @@ log:
   # 设置日志文件
   log_file: "server.log"
 
+# Web界面配置
+web:
+  # 是否启用Web界面
+  enabled: true
+  # Web服务监听端口
+  port: 8080
+  # 静态资源目录路径
+  static_dir: web/dist
+
 # 音频处理相关设置
 delete_audio: true
 use_private_config: false

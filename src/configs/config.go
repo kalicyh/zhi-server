@@ -30,6 +30,12 @@ type Config struct {
 		LogFile   string `yaml:"log_file"`
 	} `yaml:"log"`
 
+	Web struct {
+		Enabled   bool   `yaml:"enabled"`
+		Port      int    `yaml:"port"`
+		StaticDir string `yaml:"static_dir"`
+	} `yaml:"web"`
+
 	DeleteAudio      bool `yaml:"delete_audio"`
 	UsePrivateConfig bool `yaml:"use_private_config"`
 
