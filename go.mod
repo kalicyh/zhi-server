@@ -10,6 +10,7 @@ require (
 	github.com/qrtc/opus-go v0.0.1
 	github.com/sashabaranov/go-openai v1.40.0
 	github.com/wujunwei928/edge-tts-go v0.0.0-20250315123430-d4675babeb96
+	golang.org/x/sync v0.14.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
