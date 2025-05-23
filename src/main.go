@@ -13,6 +13,7 @@ import (
 	"xiaozhi-server-go/src/configs"
 	"xiaozhi-server-go/src/core"
 	"xiaozhi-server-go/src/core/utils"
+	"xiaozhi-server-go/src/ota"
 
 	"strconv"
 
@@ -21,10 +22,10 @@ import (
 
 	// 导入所有providers以确保init函数被调用
 	_ "xiaozhi-server-go/src/core/providers/asr/doubao"
+	_ "xiaozhi-server-go/src/core/providers/llm/ollama"
 	_ "xiaozhi-server-go/src/core/providers/llm/openai"
 	_ "xiaozhi-server-go/src/core/providers/tts/doubao"
 	_ "xiaozhi-server-go/src/core/providers/tts/edge"
-	_ "xiaozhi-server-go/src/core/providers/llm/ollama"
 )
 
 func main() {
@@ -57,8 +58,19 @@ func main() {
 	router := gin.Default()
 	router.SetTrustedProxies([]string{"127.0.0.1"})
 
-	// 静态文件 & SPA 回退
-	router.Static("/", filepath.Join("web", "dist"))
+	// API路由全部挂载到/api前缀下
+	apiGroup := router.Group("/api")
+	otaUpdateURL := "ws://localhost:" + strconv.Itoa(config.Web.Port) + "/ws"
+	otaService := ota.NewDefaultOTAService(otaUpdateURL)
+	if err := otaService.Start(context.Background(), router, apiGroup); err != nil {
+		logger.Error("OTA 服务启动失败", err)
+		os.Exit(1)
+	}
+
+	// 前端页面
+	router.Static("/admin", filepath.Join("web", "dist"))
+
+	// 未匹配的所有路由，返回前端 index.html
 	router.NoRoute(func(c *gin.Context) {
 		c.File(filepath.Join("web", "dist", "index.html"))
 	})

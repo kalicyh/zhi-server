@@ -1,6 +1,7 @@
 import React from 'react';
 import { BellIcon } from 'lucide-react';
 import ThemeButton from './ThemeButton';
+import avatarIcon from '../assets/icons/icon.png';
 
 export default function Topbar() {
   return (
@@ -10,7 +11,7 @@ export default function Topbar() {
         <ThemeButton />
         <div className="avatar online">
           <div className="w-10 h-10 rounded-full ring ring-primary ring-offset-2 ring-offset-base-100">
-            <img src="/assets/icons/icon.png" alt="User avatar" />
+            <img src={avatarIcon} alt="User avatar" />
           </div>
         </div>
       </div>
