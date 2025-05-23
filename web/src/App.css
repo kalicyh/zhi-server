@@ -2,3 +2,20 @@
 @plugin "daisyui" {
     themes: all;
   }
+@keyframes blob1 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(950px, 60px) scale(1.2); }
+}
+@keyframes blob2 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-1100px, 90px) scale(1.1); }
+}
+@keyframes blob3 {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(200px, 510px) scale(1.3); }
+}
+  
+.animate-blob1 { animation: blob1 20s infinite ease-in-out; top: 10%; left: 1%; }
+.animate-blob2 { animation: blob2 15s infinite ease-in-out; bottom: 10%; right: 15%; }
+.animate-blob3 { animation: blob3 10s infinite ease-in-out; top: 10%; left: 30%; }
+  
